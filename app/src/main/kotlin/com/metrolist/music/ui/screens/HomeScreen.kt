@@ -1047,7 +1047,6 @@ fun HomeScreen(
             if (!chipActive && communityPlaylists?.isNotEmpty() == true) list.add(HomeSection.FromTheCommunity)
             if (!chipActive && dailyDiscover?.isNotEmpty() == true) list.add(HomeSection.DailyDiscover)
             if (!chipActive && keepListening?.isNotEmpty() == true) list.add(HomeSection.KeepListening)
-            if (!chipActive && accountPlaylists?.isNotEmpty() == true) list.add(HomeSection.AccountPlaylists)
             if (!chipActive && forgottenFavorites?.isNotEmpty() == true) list.add(HomeSection.ForgottenFavorites)
 
             if (!chipActive) {
@@ -1062,7 +1061,7 @@ fun HomeScreen(
 
             if (explorePage?.moodAndGenres != null) list.add(HomeSection.MoodAndGenres)
 
-            if (randomizeHomeOrder) {
+            val ordered = if (randomizeHomeOrder) {
                 list.sortedByDescending { section ->
                     // Use a stable seed for each section based on the session seed + section ID hash
                     // This ensures the weight for a specific section remains constant during a session (until refresh)
@@ -1135,6 +1134,9 @@ fun HomeScreen(
                     }
                 }
             }
+
+            // Speed Dial always leads the home page, regardless of ordering mode.
+            ordered.sortedByDescending { it == HomeSection.SpeedDial }
         }
 
     LaunchedEffect(quickPicks) {
@@ -1589,6 +1591,48 @@ fun HomeScreen(
                                                                         isActive =
                                                                             item.id in listOf(mediaMetadata?.album?.id, mediaMetadata?.id),
                                                                         isPlaying = isPlaying,
+                                                                        onShuffleClick = if (isListenTogetherGuest) null else {
+                                                                            {
+                                                                                when (item) {
+                                                                                    is SongItem -> {
+                                                                                        playerConnection.playQueue(
+                                                                                            ListQueue(
+                                                                                                title = item.title,
+                                                                                                items = listOf(item.toMediaItem()),
+                                                                                            ),
+                                                                                        )
+                                                                                        playerConnection.player.shuffleModeEnabled = true
+                                                                                    }
+
+                                                                                    is AlbumItem -> {
+                                                                                        playerConnection.playQueue(YouTubeAlbumRadio(item.playlistId))
+                                                                                        playerConnection.player.shuffleModeEnabled = true
+                                                                                    }
+
+                                                                                    is PlaylistItem -> {
+                                                                                        val endpoint = item.shuffleEndpoint ?: item.playEndpoint
+                                                                                        if (endpoint != null) {
+                                                                                            playerConnection.playQueue(YouTubeQueue(endpoint))
+                                                                                            if (item.shuffleEndpoint == null) {
+                                                                                                playerConnection.player.shuffleModeEnabled = true
+                                                                                            }
+                                                                                        }
+                                                                                    }
+
+                                                                                    is EpisodeItem -> {
+                                                                                        playerConnection.playQueue(
+                                                                                            ListQueue(
+                                                                                                title = item.title,
+                                                                                                items = listOf(item.toMediaMetadata().toMediaItem()),
+                                                                                            ),
+                                                                                        )
+                                                                                        playerConnection.player.shuffleModeEnabled = true
+                                                                                    }
+
+                                                                                    else -> {}
+                                                                                }
+                                                                            }
+                                                                        },
                                                                         modifier =
                                                                             Modifier
                                                                                 .fillMaxSize()

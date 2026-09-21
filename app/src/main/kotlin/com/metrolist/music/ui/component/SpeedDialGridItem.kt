@@ -1,6 +1,7 @@
 package com.metrolist.music.ui.component
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -20,10 +21,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.metrolist.innertube.models.AlbumItem
 import com.metrolist.innertube.models.ArtistItem
+import com.metrolist.innertube.models.EpisodeItem
+import com.metrolist.innertube.models.PlaylistItem
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.YTItem
 import com.metrolist.music.R
@@ -37,6 +43,7 @@ fun SpeedDialGridItem(
     modifier: Modifier = Modifier,
     isActive: Boolean = false,
     isPlaying: Boolean = false,
+    onShuffleClick: (() -> Unit)? = null,
 ) {
     Box(
         modifier = modifier
@@ -110,6 +117,19 @@ fun SpeedDialGridItem(
             )
         }
 
-
+        // Shuffle Icon - top-left, plays this item immediately in shuffle mode
+        if (onShuffleClick != null && (item is SongItem || item is AlbumItem || item is PlaylistItem || item is EpisodeItem)) {
+            Icon(
+                painter = painterResource(R.drawable.shuffle),
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+                    .size(16.dp)
+                    .semantics { contentDescription = "Shuffle play" }
+                    .clickable { onShuffleClick() }
+            )
+        }
     }
 }

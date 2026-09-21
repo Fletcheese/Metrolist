@@ -2,9 +2,9 @@
 
 <img src="fastlane/metadata/android/en-US/images/icon.png" alt="Metrolist app icon" width="200" />
 
-# Metrolist
+# FletchTunes
 
-### YouTube Music client for Android
+### A personal fork of [Metrolist](https://github.com/MetrolistGroup/Metrolist), a YouTube Music client for Android
 
 <br/>
 
@@ -29,6 +29,11 @@
 [**Download**](#download-now) · [**Features**](#features) · [**Translate**](#translations) · [**FAQ**](#faq) · [**Support**](#support-the-project)
 
 </div>
+
+> [!NOTE]
+> **This is Fletch's personal fork**, rebranded "FletchTunes" with a few personal UX tweaks (see [CLAUDE.md](CLAUDE.md)
+> for what's changed and why). The badges, download links, translations, and support/donation info below all point at
+> the **upstream Metrolist project** — this fork isn't published anywhere and doesn't need any of its own.
 
 > [!WARNING]
 > # MAINTENANCE MODE
