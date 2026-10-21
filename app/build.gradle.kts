@@ -133,7 +133,7 @@ android {
             }
             isDebuggable = true
             if (appNameOverride == null) {
-                resValue("string", "app_name", "FletchTunes Debug")
+                resValue("string", "app_name", "FletchTunes")
             }
             signingConfig =
                 if (workflowDebugKeystoreFile != null) {
