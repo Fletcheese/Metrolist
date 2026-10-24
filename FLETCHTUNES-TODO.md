@@ -30,3 +30,7 @@ Play policy bars apps that download or play YouTube content outside YouTube's AP
 ## 5. Sync with upstream before B
 
 This fork was 63 commits behind upstream `MetrolistGroup/Metrolist` on 2026-10-21. Sync it before building the release.
+
+## 6. Remember queues: fix queue loss, then OuterTune-style multiple queues
+
+FletchTunes sometimes forgets the queue when the app closes, and Fletcher wants OuterTune-style parallel queues. Research, hypotheses, repro steps, the phased plan and four open questions are in `FLETCHTUNES-QUEUES.md`. Answer the questions and reproduce the loss on the phone before changing any code; do item 5 (upstream sync) first.
