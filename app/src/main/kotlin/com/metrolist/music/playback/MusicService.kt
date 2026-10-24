@@ -268,6 +268,10 @@ class MusicService :
     Player.Listener,
     PlaybackStatsListener.Callback {
     @Inject
+    @com.metrolist.music.di.ApplicationScope
+    lateinit var applicationScope: CoroutineScope
+
+    @Inject
     lateinit var database: MusicDatabase
 
     @Inject
@@ -400,7 +404,8 @@ class MusicService :
     private var fadingPlayer: ExoPlayer? = null
     private var isCrossfading = false
     private var crossfadeJob: Job? = null
-    private var isRunning = false
+    private var taskCleared = false
+    private var lastSavedPlayerState: PersistPlayerState? = null
     private var mediaSession: MediaLibrarySession? = null
     private var controllerFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
 
@@ -422,6 +427,7 @@ class MusicService :
 
     private var isAudioEffectSessionOpened = false
     private var openedAudioEffectSessionId: Int = C.AUDIO_SESSION_ID_UNSET
+    private val historyReporters = HashMap<Player, YouTubeHistoryReporter>()
     private val playerNormalizationProcessors = HashMap<Player, VolumeNormalizationAudioProcessor>()
     private val playerEqualizerProcessors = HashMap<Player, CustomEqualizerAudioProcessor>()
 
@@ -485,6 +491,9 @@ class MusicService :
     private var pausedDueToNetworkError = false
     private var silenceSkipJob: Job? = null
 
+    private var historyPaused = true
+    private var historyDurationMs = 30_000L
+
     // Cached preferences to avoid runBlocking DataStore reads in hot paths
     @Volatile
     private var cachedPersistentQueue = true
@@ -522,21 +531,6 @@ class MusicService :
     // This set makes recoverSong() effectively a no-op while a call for the same
     // mediaId is already running, so at most one is ever in flight per song.
     private val recoveringSongs = Collections.synchronizedSet(mutableSetOf<String>())
-
-    private val sessionKey
-        get() = YouTube.dataSyncId.takeIf { !it.isNullOrBlank() }
-            ?: YouTube.visitorData.takeIf { !it.isNullOrBlank() }
-            ?: ""
-
-    private fun cacheKey(mediaId: String) = "${sessionKey}:$mediaId"
-
-    private val playbackUrlCache = Collections.synchronizedMap(
-        object : LinkedHashMap<String, String>(0, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean {
-                return size > 500
-            }
-        }
-    )
 
     // Flag to bypass cache when quality changes - forces fresh stream fetch
     private val bypassCacheForQualityChange = mutableSetOf<String>()
@@ -630,6 +624,8 @@ class MusicService :
         // never calls dataStore.get() (which does runBlocking internally).
         // This consolidates ~15 main-thread-blocking DataStore reads into 1.
         startupPrefs = runBlocking(Dispatchers.IO) { dataStore.data.first() }
+        historyPaused = startupPrefs!![PauseListenHistoryKey] ?: false
+        historyDurationMs = ((startupPrefs!![HistoryDuration] ?: 30f) * 1000).toLong()
 
         // 3. Connect the processor to the service
         // handled in createExoPlayer
@@ -656,6 +652,7 @@ class MusicService :
                 ): MediaNotification {
                     val trackingCallback =
                         MediaNotification.Provider.Callback { notification ->
+                            if (taskCleared) return@Callback
                             latestMediaNotification = notification.notification
                             onNotificationChangedCallback.onNotificationChanged(notification)
                         }
@@ -945,6 +942,15 @@ class MusicService :
                 secondaryPlayer?.setOffloadEnabled(useOffload)
             }
 
+        dataStore.data
+            .map { (it[PauseListenHistoryKey] ?: false) to ((it[HistoryDuration] ?: 30f) * 1000).toLong() }
+            .distinctUntilChanged()
+            .collectLatest(scope) { (paused, durationMs) ->
+                historyPaused = paused
+                historyDurationMs = durationMs
+                historyReporters.values.forEach { it.refresh() }
+            }
+
         var isFirstAudioTrackParamsEmit = true
         dataStore.data
             .map { it[AudioTrackPlaybackParamsKey] ?: true }
@@ -962,6 +968,7 @@ class MusicService :
                 val playWhenReady = player.playWhenReady
                 val repeatMode = player.repeatMode
                 val shuffleModeEnabled = player.shuffleModeEnabled
+                val shuffleOrder = player.shuffleOrder
                 val playbackParameters = player.playbackParameters
                 val volume = player.volume
                 val mediaItems = List(player.mediaItemCount) { index ->
@@ -987,6 +994,7 @@ class MusicService :
                 newPlayer.setMediaItems(mediaItems, currentIndex, currentPosition)
                 newPlayer.repeatMode = repeatMode
                 newPlayer.shuffleModeEnabled = shuffleModeEnabled
+                newPlayer.setShuffleOrder(shuffleOrder)
                 newPlayer.playbackParameters = playbackParameters
                 newPlayer.volume = volume
                 newPlayer.playWhenReady = playWhenReady
@@ -1355,7 +1363,30 @@ class MusicService :
                 }
             }
         }
-        player.addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
+        val historyReporter = YouTubeHistoryReporter(
+            player = player,
+            // Media3 posts final stats after release, including after the service scope is cancelled.
+            scope = CoroutineScope(applicationScope.coroutineContext + Dispatchers.Main),
+            thresholdMs = { historyDurationMs },
+            isEnabled = { !historyPaused && !YouTube.cookie.isNullOrBlank() },
+            createReport = { videoId ->
+                val account = Triple(YouTube.cookie, YouTube.dataSyncId, YouTube.authUser)
+                val nonce = com.metrolist.innertubex.extraction.generateClientPlaybackNonce()
+                suspend {
+                    withContext(Dispatchers.IO) {
+                        YouTube.registerPlayback(videoId, nonce) {
+                            !dataStore.get(PauseListenHistoryKey, false) &&
+                                account == Triple(YouTube.cookie, YouTube.dataSyncId, YouTube.authUser)
+                        }.onFailure { reportException(it) }
+                            .getOrDefault(false)
+                    }
+                }
+            },
+            onStatsReady = this@MusicService,
+        )
+        historyReporters[player] = historyReporter
+        player.addAnalyticsListener(historyReporter.statsListener)
+        player.addAnalyticsListener(historyReporter.listener)
 
         // Cleanup handled manually in onDestroy/release
         _playerFlow.value = player
@@ -1468,6 +1499,7 @@ class MusicService :
         runCatching { filesDir.resolve(PERSISTENT_QUEUE_FILE).delete() }
         runCatching { filesDir.resolve(PERSISTENT_AUTOMIX_FILE).delete() }
         runCatching { filesDir.resolve(PERSISTENT_PLAYER_STATE_FILE).delete() }
+        lastSavedPlayerState = null
     }
 
     private fun waitOnNetworkError() {
@@ -1573,6 +1605,12 @@ class MusicService :
             listOf(
                 CommandButton
                     .Builder()
+                    .setDisplayName(getString(if (player.shuffleModeEnabled) R.string.action_shuffle_off else R.string.action_shuffle_on))
+                    .setIconResId(if (player.shuffleModeEnabled) R.drawable.shuffle_on else R.drawable.shuffle)
+                    .setSessionCommand(CommandToggleShuffle)
+                    .build(),
+                CommandButton
+                    .Builder()
                     .setDisplayName(
                         getString(
                             if (isLiked == true) {
@@ -1604,12 +1642,6 @@ class MusicService :
                             else -> throw IllegalStateException()
                         },
                     ).setSessionCommand(CommandToggleRepeatMode)
-                    .build(),
-                CommandButton
-                    .Builder()
-                    .setDisplayName(getString(if (player.shuffleModeEnabled) R.string.action_shuffle_off else R.string.action_shuffle_on))
-                    .setIconResId(if (player.shuffleModeEnabled) R.drawable.shuffle_on else R.drawable.shuffle)
-                    .setSessionCommand(CommandToggleShuffle)
                     .build(),
                 CommandButton
                     .Builder()
@@ -1758,6 +1790,7 @@ class MusicService :
         playWhenReady: Boolean = true,
         restoringQueue: Boolean = false,
     ) {
+        if (taskCleared) return
         if (!playerInitialized.value) {
             Timber.tag(TAG).w("playQueue called before player initialization, queuing request")
             scope.launch {
@@ -3793,7 +3826,11 @@ class MusicService :
             if (!shouldBypassCache) {
                 val usePlayerCache = dataStore.get(EnableSongCacheKey, true)
 
-                val contentLength = storedFormat?.contentLength
+                val contentLength =
+                    storedFormat?.contentLength
+                        ?: ContentMetadata
+                            .getContentLength(downloadCache.getContentMetadata(mediaId))
+                            .takeIf { it > 0L }
                 val requiredLength =
                     when {
                         dataSpec.length >= 0 -> dataSpec.length
@@ -3933,10 +3970,6 @@ class MusicService :
                     expectedGeneration = cacheGeneration,
                 )
 
-                nonNullPlayback.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.let {
-                    playbackUrlCache[cacheKey(mediaId)] = it
-                }
-
                 return@Factory dataSpec.withResolvedStream(
                     CachedStreamUrl(
                         url = streamUrl,
@@ -4057,22 +4090,6 @@ class MusicService :
                 }
             }
         }
-
-        if (playbackStats.totalPlayTimeMs >= historyDurationMs) {
-            scope.launch(Dispatchers.IO) {
-                val playbackUrl =
-                    playbackUrlCache[cacheKey(mediaItem.mediaId)]
-                if (playbackUrl == null) {
-                    Timber.tag(TAG).w("No playback tracking URL available; skipping YouTube history registration")
-                    return@launch
-                }
-                YouTube
-                    .registerPlayback(null, playbackUrl)
-                    .onFailure {
-                        reportException(it)
-                    }
-            }
-        }
     }
 
     private fun saveQueueToDisk() {
@@ -4139,12 +4156,15 @@ class MusicService :
             currentMediaItemIndex = player.currentMediaItemIndex,
             playbackState = player.playbackState,
         )
+        // While paused nothing changes, so skip the periodic rewrite.
+        if (playerState == lastSavedPlayerState) return
         runCatching {
             filesDir.resolve(PERSISTENT_PLAYER_STATE_FILE).outputStream().use { fos ->
                 ObjectOutputStream(fos).use { oos ->
                     oos.writeObject(playerState)
                 }
             }
+            lastSavedPlayerState = playerState
             Timber.tag(TAG).d("Player state saved successfully")
         }.onFailure {
             Timber.tag(TAG).e(it, "Failed to save player state")
@@ -4306,44 +4326,68 @@ class MusicService :
         shutdownDeferred.complete(Unit)
     }
 
-    override fun onBind(intent: Intent?) = super.onBind(intent) ?: binder
+    override fun onBind(intent: Intent?) =
+        super.onBind(intent) ?: binder.also {
+            // The app UI rebinding to a still-alive instance means the user is back.
+            taskCleared = false
+        }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (dataStore.get(StopMusicOnTaskClearKey, false)) {
-            if (!::player.isInitialized) {
-                stopSelf()
-                return
-            }
-            // Remote playback (Cast) is independent of the local ExoPlayer; ending the session
-            // is required or audio keeps playing on the Cast device.
-            runCatching {
-                if (castConnectionHandler?.isCasting?.value == true) {
-                    castConnectionHandler?.disconnect()
-                }
-                player.stop()
-                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                controllerFuture?.let { MediaController.releaseFuture(it) }
-                controllerFuture = null
-                // Media3: coordinates notification/foreground teardown and stopSelf; required when
-                // playback was ongoing (default super.onTaskRemoved keeps the service alive).
-                pauseAllPlayersAndStopSelf()
-            }.onFailure { e ->
-                Timber.tag(TAG).e(e, "Failed to stop playback on task clear")
-                controllerFuture?.let { MediaController.releaseFuture(it) }
-                controllerFuture = null
-                runCatching { pauseAllPlayersAndStopSelf() }.onFailure { stopSelf() }
-            }
-            return
+            stopOnTaskClear()
+        } else {
+            super.onTaskRemoved(rootIntent)
         }
-        super.onTaskRemoved(rootIntent)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = mediaSession
+    /**
+     * Idempotent hard stop: besides the current player, in-flight playQueue work, crossfade
+     * players and late Media3 notification updates can otherwise resume audio or repost the
+     * notification after the task is cleared.
+     */
+    fun stopOnTaskClear() {
+        if (taskCleared) return
+        taskCleared = true
+        crossfadeJob?.cancel()
+        crossfadeJob = null
+        crossfadeMessage?.cancel()
+        // Remote playback (Cast) is independent of the local ExoPlayer; ending the session
+        // is required or audio keeps playing on the Cast device.
+        runCatching {
+            if (castConnectionHandler?.isCasting?.value == true) {
+                castConnectionHandler?.disconnect()
+            }
+            if (::player.isInitialized) {
+                listOfNotNull(player, secondaryPlayer, fadingPlayer).forEach {
+                    it.pause()
+                    it.stop()
+                }
+                wasPlayingBeforeAudioFocusLoss = false
+                abandonAudioFocus()
+            }
+        }.onFailure { Timber.tag(TAG).e(it, "Failed to stop playback on task clear") }
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        controllerFuture = null
+        latestMediaNotification = null
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
+        // Media3: coordinates notification/foreground teardown and stopSelf; required when
+        // playback was ongoing (default super.onTaskRemoved keeps the service alive).
+        runCatching { pauseAllPlayersAndStopSelf() }.onFailure { stopSelf() }
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        // External controllers (Android Auto, Bluetooth, Wear) only connect when the user is using
+        // them, and they keep this instance alive after a task clear, so they must lift the guard.
+        if (controllerInfo.packageName != packageName) taskCleared = false
+        return mediaSession
+    }
 
     override fun onUpdateNotification(
         session: MediaSession,
         startInForegroundRequired: Boolean,
     ) {
+        if (taskCleared) return
         try {
             super.onUpdateNotification(session, startInForegroundRequired)
         } catch (e: ForegroundServiceStartNotAllowedException) {
@@ -4362,6 +4406,14 @@ class MusicService :
         flags: Int,
         startId: Int,
     ): Int {
+        if (taskCleared) {
+            // A media button press (headset, car) is the user resuming; anything else is a stale restart.
+            if (intent?.action != Intent.ACTION_MEDIA_BUTTON) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            taskCleared = false
+        }
         // On Android O+, every startForegroundService() call requires
         // Service.startForeground() to be called within a short timeout.
         // Some OEMs (e.g. MIUI) strictly enforce this even when the
@@ -4832,6 +4884,7 @@ class MusicService :
 
         secPlayer.repeatMode = repeatMode
         secPlayer.shuffleModeEnabled = shuffleModeEnabled
+        secPlayer.setShuffleOrder(player.shuffleOrder)
         secPlayer.playbackParameters = player.playbackParameters
 
         try {
@@ -4846,11 +4899,6 @@ class MusicService :
         }
 
         performCrossfadeSwap()
-
-        if (shuffleModeEnabled) {
-            val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
-            applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
-        }
     }
 
     private fun performCrossfadeSwap() {
@@ -4975,6 +5023,7 @@ class MusicService :
     }
 
     private fun releaseExoPlayer(player: ExoPlayer) {
+        historyReporters.remove(player)?.close()
         playerNormalizationProcessors.remove(player)
         playerSilenceProcessors.remove(player)
         playerEqualizerProcessors.remove(player)?.let(equalizerService::removeAudioProcessor)
