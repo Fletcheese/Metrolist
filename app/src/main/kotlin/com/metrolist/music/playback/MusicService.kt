@@ -1883,6 +1883,14 @@ class MusicService :
             // existing board id instead of minting a new row.
             val boardItems = initialStatus.items.mapNotNull { it.metadata }
             if (boardItems.isNotEmpty()) {
+                // player.shuffleModeEnabled must be read here, on the main thread (playQueue's
+                // coroutine runs with SilentHandler/Main), NOT inside the Dispatchers.IO block
+                // below - ExoPlayer throws IllegalStateException ("Player is accessed on the
+                // wrong thread") if touched off the application thread. That exception was being
+                // swallowed by runCatching, so queueBoard.startQueue() silently never ran on
+                // every single playQueue() call - the actual cause of the queue/queue_song_map
+                // tables staying empty, not a timing/race issue.
+                val shuffled = player.shuffleModeEnabled
                 applicationScope.launch(Dispatchers.IO) {
                     runCatching {
                         queueBoard.startQueue(
@@ -1890,7 +1898,7 @@ class MusicService :
                             title = initialStatus.title ?: queueTitle ?: "Queue",
                             items = boardItems,
                             startIndex = initialStatus.mediaItemIndex,
-                            shuffled = player.shuffleModeEnabled,
+                            shuffled = shuffled,
                         )
                     }.onSuccess { id ->
                         activeQueueBoardId = id
