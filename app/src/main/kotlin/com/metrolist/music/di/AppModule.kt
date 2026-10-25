@@ -48,6 +48,12 @@ object AppModule {
 
     @Singleton
     @Provides
+    fun provideQueueDao(
+        database: InternalDatabase,
+    ) = database.queueDao
+
+    @Singleton
+    @Provides
     fun provideInternalDatabase(
         @ApplicationContext context: Context,
     ): InternalDatabase = InternalDatabase.newInternalDatabaseInstance(context)

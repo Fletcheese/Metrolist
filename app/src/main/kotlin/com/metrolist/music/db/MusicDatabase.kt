@@ -22,6 +22,7 @@ import androidx.room.migration.Migration
 import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
+import com.metrolist.music.db.daos.QueueDao
 import com.metrolist.music.db.daos.SpeedDialDao
 import com.metrolist.music.db.entities.AlbumArtistMap
 import com.metrolist.music.db.entities.AlbumEntity
@@ -34,6 +35,8 @@ import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSongMap
 import com.metrolist.music.db.entities.PlaylistSongMapPreview
 import com.metrolist.music.db.entities.PodcastEntity
+import com.metrolist.music.db.entities.QueueEntity
+import com.metrolist.music.db.entities.QueueSongMapEntity
 import com.metrolist.music.db.entities.RecognitionHistory
 import com.metrolist.music.db.entities.RelatedSongMap
 import com.metrolist.music.db.entities.SearchHistory
@@ -59,6 +62,9 @@ class MusicDatabase(
 ) : DatabaseDao by delegate.dao {
     val speedDialDao: SpeedDialDao
         get() = delegate.speedDialDao
+
+    val queueDao: QueueDao
+        get() = delegate.queueDao
 
     val openHelper: SupportSQLiteOpenHelper
         get() = delegate.openHelper
@@ -107,13 +113,15 @@ class MusicDatabase(
         RecognitionHistory::class,
         SpeedDialItem::class,
         PodcastEntity::class,
+        QueueEntity::class,
+        QueueSongMapEntity::class,
     ],
     views = [
         SortedSongArtistMap::class,
         SortedSongAlbumMap::class,
         PlaylistSongMapPreview::class,
     ],
-    version = 38,
+    version = 39,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3),
@@ -152,12 +160,16 @@ class MusicDatabase(
         AutoMigration(from = 35, to = 36, spec = Migration35To36::class),
         AutoMigration(from = 36, to = 37),
         AutoMigration(from = 37, to = 38),
+        // Purely additive: new `queue` and `queue_song_map` tables for the parallel-queues
+        // feature. No column changes to existing tables, so a plain AutoMigration suffices.
+        AutoMigration(from = 38, to = 39),
     ],
 )
 @TypeConverters(Converters::class)
 abstract class InternalDatabase : RoomDatabase() {
     abstract val dao: DatabaseDao
     abstract val speedDialDao: SpeedDialDao
+    abstract val queueDao: QueueDao
 
     companion object {
         const val DB_NAME = "song.db"
