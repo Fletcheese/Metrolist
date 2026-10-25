@@ -99,6 +99,10 @@ fun NavGraphBuilder.navigationBuilder(
         LibraryScreen()
     }
 
+    composable(Screens.Queues.route) {
+        QueuesScreen()
+    }
+
     composable(Screens.ListenTogether.route) {
         ListenTogetherScreen(navController, showTopBar = false)
     }

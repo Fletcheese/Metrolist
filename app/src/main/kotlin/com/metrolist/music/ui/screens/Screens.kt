@@ -45,7 +45,14 @@ sealed class Screens(
         route = "library"
     )
 
+    object Queues : Screens(
+        titleId = R.string.queues,
+        iconIdInactive = R.drawable.queue_music,
+        iconIdActive = R.drawable.queue_music,
+        route = "queues"
+    )
+
     companion object {
-        val MainScreens = listOf(Home, Search, ListenTogether, Library)
+        val MainScreens = listOf(Home, Search, ListenTogether, Queues, Library)
     }
 }

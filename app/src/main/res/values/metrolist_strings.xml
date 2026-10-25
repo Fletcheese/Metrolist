@@ -994,4 +994,18 @@
     <string name="stream_source_web_creator_desc">Creator web client.</string>
     <string name="top_result">Top result</string>
     <string name="other">Other</string>
+
+    <string name="queues">Queues</string>
+    <string name="active_queues">Active queues</string>
+    <string name="archived_queues">Archived queues</string>
+    <string name="no_active_queues">No active queues yet. Start playing something to create one.</string>
+    <string name="no_archived_queues">No archived queues</string>
+    <string name="queue_song_count">%1$d songs</string>
+    <string name="queue_now_playing">Now playing</string>
+    <string name="queue_last_played">Last played %1$s</string>
+    <string name="switch_to_queue">Switch</string>
+    <string name="delete_queue">Delete queue</string>
+    <string name="delete_queue_confirm">Delete this queue? This can\'t be undone.</string>
+    <string name="unarchive_queue">Restore</string>
+    <string name="queue_archived_hint">Auto-archived after a week unused</string>
 </resources>
