@@ -21,6 +21,9 @@ class YouTubeQueue(
     private var retryCount = 0
     private val maxRetries = 3
 
+    override val queueSourceKey: String? =
+        "yt_watch:${endpoint.playlistId ?: endpoint.videoId ?: "unknown"}"
+
     private class EmptyRadioQueueException : IllegalStateException()
 
     override suspend fun getInitialStatus(): Queue.Status {

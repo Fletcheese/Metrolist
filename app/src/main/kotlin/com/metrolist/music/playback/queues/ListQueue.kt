@@ -13,8 +13,16 @@ class ListQueue(
     val items: List<MediaItem>,
     val startIndex: Int = 0,
     val position: Long = 0L,
+    /**
+     * Stable id of whatever this list came from (a local playlist id, an album id, ...), when the
+     * caller has one. Not every call site threads one through yet (see FLETCHTUNES-QUEUES.md) —
+     * falling back to a title-based key below is a best-effort heuristic, not a guarantee.
+     */
+    val sourceKey: String? = null,
 ) : Queue {
     override val preloadItem: MediaMetadata? = null
+
+    override val queueSourceKey: String? = sourceKey ?: title?.let { "list:$it" }
 
     override suspend fun getInitialStatus() = Queue.Status(title, items, startIndex, position)
 

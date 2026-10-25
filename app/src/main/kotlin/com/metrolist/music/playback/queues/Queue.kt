@@ -12,6 +12,15 @@ import com.metrolist.music.models.MediaMetadata
 interface Queue {
     val preloadItem: MediaMetadata?
 
+    /**
+     * Stable key identifying the *source* this queue plays from (a playlist id, a radio watch
+     * endpoint, an album, ...). `QueueBoard` (`playback/queue/QueueBoard.kt`) uses this to decide
+     * whether starting this queue should reuse an existing saved queue for the same source
+     * (OuterTune's "replaying a source reuses its queue") or create a new one. Null means
+     * "always create a new, ad hoc queue" (e.g. a bare song tap or "Add to queue").
+     */
+    val queueSourceKey: String? get() = null
+
     suspend fun getInitialStatus(): Status
 
     fun hasNextPage(): Boolean

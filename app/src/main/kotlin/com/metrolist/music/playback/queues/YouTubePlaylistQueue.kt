@@ -25,6 +25,8 @@ class YouTubePlaylistQueue(
     private var retryCount = 0
     private val maxRetries = 3
 
+    override val queueSourceKey: String? = "yt_playlist:$playlistId"
+
     override suspend fun getInitialStatus(): Queue.Status {
         return withContext(IO) {
             if (initialSongs.isNotEmpty()) {

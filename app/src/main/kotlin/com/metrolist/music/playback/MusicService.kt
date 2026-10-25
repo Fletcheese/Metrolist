@@ -223,6 +223,7 @@ import com.metrolist.music.ui.utils.resize
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CancellationException
 import kotlin.coroutines.coroutineContext
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -297,6 +298,12 @@ class MusicService :
 
     @Inject
     lateinit var listenTogetherManager: com.metrolist.music.listentogether.ListenTogetherManager
+
+    @Inject
+    lateinit var queueBoard: com.metrolist.music.playback.queue.QueueBoard
+
+    /** Room-backed id of the currently active parallel queue (see QueueBoard), if any. */
+    private var activeQueueBoardId: String? = null
 
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -1288,6 +1295,17 @@ class MusicService :
                 }
             }
         }
+
+        // Parallel queues: auto-archive (not delete) any queue untouched for a week, since
+        // Fletcher opted out of OuterTune's hard queue-count cap in favor of this. Runs once on
+        // start, then every 6h — archiving is cheap and doesn't need to be more eager than that.
+        applicationScope.launch {
+            while (isActive) {
+                runCatching { queueBoard.sweepStaleQueues() }
+                    .onFailure { Timber.tag(TAG).e(it, "Failed to sweep stale queues") }
+                delay(6.hours)
+            }
+        }
     }
 
     private fun createExoPlayer(prefs: Preferences? = null): ExoPlayer {
@@ -1857,6 +1875,27 @@ class MusicService :
             if (player.shuffleModeEnabled) {
                 val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
                 applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
+            }
+
+            // Parallel queues: starting (or restarting) a source creates/reuses its own queue
+            // rather than silently replacing whatever board entry was active before, per
+            // OuterTune's model (FLETCHTUNES-QUEUES.md Phase 2b). Restored queues keep their
+            // existing board id instead of minting a new row.
+            val boardItems = initialStatus.items.mapNotNull { it.metadata }
+            if (boardItems.isNotEmpty()) {
+                applicationScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        queueBoard.startQueue(
+                            sourceKey = queue.queueSourceKey,
+                            title = initialStatus.title ?: queueTitle ?: "Queue",
+                            items = boardItems,
+                            startIndex = initialStatus.mediaItemIndex,
+                            shuffled = player.shuffleModeEnabled,
+                        )
+                    }.onSuccess { id ->
+                        activeQueueBoardId = id
+                    }.onFailure { Timber.tag(TAG).e(it, "Failed to record queue in QueueBoard") }
+                }
             }
         }
     }
@@ -2798,6 +2837,9 @@ class MusicService :
         }
         if (events.containsAny(EVENT_TIMELINE_CHANGED, EVENT_POSITION_DISCONTINUITY)) {
             currentMediaMetadata.value = player.currentMetadata
+            if (events.contains(EVENT_TIMELINE_CHANGED)) {
+                syncActiveQueueToBoard()
+            }
         }
 
         if (events.containsAny(Player.EVENT_IS_PLAYING_CHANGED)) {
@@ -4089,6 +4131,26 @@ class MusicService :
                 } catch (_: SQLException) {
                 }
             }
+        }
+    }
+
+    /**
+     * Persists the currently playing queue's songs/position to the Room-backed QueueBoard
+     * immediately (not on the 60s timer that `saveQueueToDisk()` uses) — this is the fix for
+     * FLETCHTUNES-QUEUES.md's hypothesis 3 (a queue edit lost because `EVENT_TIMELINE_CHANGED`
+     * never triggered a save). Called from every queue-mutating event; cheap no-op if nothing
+     * is playing or no board queue is active yet.
+     */
+    private fun syncActiveQueueToBoard() {
+        val id = activeQueueBoardId ?: return
+        if (player.mediaItemCount == 0) return
+        val items = player.mediaItems.mapNotNull { it.metadata }
+        if (items.isEmpty()) return
+        val index = player.currentMediaItemIndex
+        applicationScope.launch(Dispatchers.IO) {
+            runCatching {
+                queueBoard.recordQueueEdit(id, items, index)
+            }.onFailure { Timber.tag(TAG).e(it, "Failed to sync queue edit to QueueBoard") }
         }
     }
 
