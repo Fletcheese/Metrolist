@@ -121,6 +121,84 @@ Answer these before Phase 1 or 2.
 3. Is Settings › Player › Persistent queue on? Is Stop music on task clear on?
 4. Option 2a (recent queues) or 2b (full OuterTune port)?
 
+## Live repro (2026-10-24, Linux box, OnePlus 6T)
+
+Phone was USB-connected, FletchTunes debug already installed at current HEAD
+(`d77e3046`, versionCode 153, `lastUpdateTime` matches the commit time, so the
+build under test is current). A real session was already in progress: queue
+size 57, paused, position 107397 ms, active item id 7 ("Lizzo: NPR Music Tiny
+Desk Concert").
+
+**Blocker:** the phone's screen was locked with a pattern/fingerprint
+(trust-agent "on-body" lock had lapsed — `dumpsys trust` showed
+`deviceLocked=1`). Per this repo's own `CLAUDE.md` ("do not attempt to
+dismiss a secured (PIN/pattern) lock screen — ask Fletch to unlock it"), I
+did not try to bypass it. That rules out driving the UI (tapping into the
+queue to add/remove/reorder a song), so the specific case Fletcher asked for
+— edit the queue, then kill within the ~60 s save window (case c/d) — could
+**not** be completed end-to-end live in this session.
+
+**What I did run (case c, no screen needed):**
+
+1. Captured state via `dumpsys media_session`: size=57, state=2 (paused),
+   position=107397, item id=7; and `md5sum` of all three persisted files.
+2. `adb shell am force-stop com.metrolist.music.debug` — a harder kill than
+   `am kill` (fully stops the process, not just low-memory reclaim).
+3. Confirmed the files were untouched by the kill itself (same md5sums).
+4. Relaunched via `am start` (activity queues behind the lock screen, not
+   visible, but the service/process still comes up and restores).
+5. `dumpsys media_session` again: size=57, state=2, position=107397, item
+   id=7, same metadata — **exact restore**, no data loss.
+6. Checked `logcat` across the whole cycle: no corruption/clear-data
+   warnings; "Queue saved successfully" fired normally once playback resumed
+   after restore.
+
+**Conclusion of what was tested:** with no edit in the last 60 s before the
+kill, force-stop → restore round-trips perfectly in the current build. This
+is live evidence against hypothesis 1 (corruption / unreadable file) as a
+general cause — the file read back fine, no `serialVersionUID` mismatch bit
+us here because no new build was installed between save and restore. It does
+not clear hypothesis 1 for the "new build installed, old file present" case
+(f) — that needs a real reinstall-over-existing-data test, which is screen-
+independent and still worth doing.
+
+**Code re-check against current `d77e3046` (not just the stale `838473b45`
+line numbers from the first pass):**
+
+- `MusicService.onEvents()` (now ~l.2778-2801): `EVENT_TIMELINE_CHANGED` /
+  `EVENT_POSITION_DISCONTINUITY` still only does
+  `currentMediaMetadata.value = player.currentMetadata` — it still never
+  calls `saveQueueToDisk()`. Hypothesis 3's mechanism is confirmed present,
+  unchanged by the upstream merge: a queue edit (add/remove/move/play next)
+  that doesn't also trigger `onMediaItemTransition` or
+  `onPlaybackStateChanged` is invisible to the save path until the 60 s
+  timer or `onDestroy`.
+- `playQueue()` (now ~l.1788-1799): the "player not initialized yet" branch
+  still re-calls itself as `playQueue(queue, playWhenReady)`, dropping
+  `restoringQueue`. Confirmed still present. This branch is plausible on
+  *every* cold-start restore (player may not be ready yet when
+  `onCreate`'s restore call fires), so it's more than "minor" — worth
+  rechecking whether it reproduces as a shuffle-reset-on-restore symptom,
+  separate from the "queue forgotten" complaint.
+
+**Net assessment:** hypothesis 3 (edit not saved within the window) is now
+the best-supported explanation — baseline persistence/restore works, and the
+code path that would drop an un-timered edit is confirmed still live — but
+it is *not yet confirmed by the literal live repro Fletcher asked for*
+(make an edit, kill within 60 s, see the edit specifically lost). That step
+needs either the phone unlocked so a scripted `input tap` sequence can drive
+an add/remove/reorder, or Fletcher running the matrix himself (case c/d with
+an actual queue edit, in Settings › Player check Persistent queue / Stop on
+task clear beforehand) and reporting what he sees.
+
 ## Status and next step
 
-Research only, no code changed. Next: answer the questions, plug the phone into the Linux box, run the repro matrix, then Phase 1.
+No code changed. Phase 1 (persistence fix) is **not started** — per
+Fletcher's explicit instruction, the fix should not be written until the
+live repro confirms root cause, and the edit-then-kill case specifically
+could not be run due to the locked device. Next: either (a) Fletcher unlocks
+the phone or hands over a PIN/pattern he's comfortable having scripted, so
+the edit+kill repro can be completed, or (b) Fletcher runs that one case
+himself and reports the result, or (c) if he's comfortable proceeding on the
+strength of the code-confirmed mechanism + baseline live test above, say so
+explicitly and Phase 1 can start from there.
