@@ -3,15 +3,18 @@
  * Licensed under GPL-3.0 | See git history for contributors
  *
  * The "parallel queues" tab: lists every saved queue (OuterTune's queue-sheet UX, adapted -
- * see FLETCHTUNES-QUEUES.md). Lets you preview a queue's songs, switch playback to it, or
- * delete it; archived (auto-hidden after a week untouched) queues live in a collapsed section
- * and can be restored.
+ * see FLETCHTUNES-QUEUES.md). Tapping a row switches playback to it and brings the player's
+ * Queue page up (not just a silent switch); a chevron lets you preview its songs inline
+ * without committing to that switch. Long-press (or the overflow icon) opens a small,
+ * growable per-row menu - just rename for now. Archived (auto-hidden after a week untouched)
+ * queues live in a collapsed section and can be restored.
  */
 
 package com.metrolist.music.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,9 +25,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +47,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.metrolist.music.LocalPlayerConnection
@@ -49,6 +57,7 @@ import com.metrolist.music.db.entities.QueueEntity
 import com.metrolist.music.extensions.toMediaItem
 import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.playback.queues.ListQueue
+import com.metrolist.music.ui.component.TextFieldDialog
 import com.metrolist.music.viewmodels.QueuesViewModel
 import kotlinx.coroutines.launch
 
@@ -64,13 +73,17 @@ fun QueuesScreen(
     val scope = rememberCoroutineScope()
 
     var queuePendingDelete by remember { mutableStateOf<QueueEntity?>(null) }
+    var queuePendingRename by remember { mutableStateOf<QueueEntity?>(null) }
     var showArchived by remember { mutableStateOf(false) }
 
+    // Tapping a queue row should actually open it: switch MusicService's active queue to this
+    // one *and* bring the player up to its real Queue page, not just silently flip which queue
+    // is active underneath. resumeBoardQueueId tells playQueue() to reuse this exact row rather
+    // than re-deriving (and possibly duplicating) it via sourceKey matching.
     fun switchTo(queue: QueueEntity) {
         scope.launch {
             val songs = viewModel.queueBoard.loadSongs(queue.id)
             if (songs.isEmpty()) return@launch
-            viewModel.queueBoard.switchTo(queue.id)
             playerConnection?.playQueue(
                 ListQueue(
                     title = queue.title,
@@ -79,7 +92,9 @@ fun QueuesScreen(
                     position = queue.positionMs,
                     sourceKey = queue.sourceKey,
                 ),
+                resumeBoardQueueId = queue.id,
             )
+            playerConnection?.requestOpenQueueSheet()
         }
     }
 
@@ -104,6 +119,7 @@ fun QueuesScreen(
                     previewSongs = previewSongs[queue.id].orEmpty(),
                     onPlay = { switchTo(queue) },
                     onDelete = { queuePendingDelete = queue },
+                    onRename = { queuePendingRename = queue },
                     onExpand = { viewModel.loadPreview(queue) },
                 )
             }
@@ -137,6 +153,7 @@ fun QueuesScreen(
                             previewSongs = previewSongs[queue.id].orEmpty(),
                             onPlay = { viewModel.unarchive(queue) },
                             onDelete = { queuePendingDelete = queue },
+                            onRename = { queuePendingRename = queue },
                             onExpand = { viewModel.loadPreview(queue) },
                         )
                     }
@@ -163,8 +180,23 @@ fun QueuesScreen(
             },
         )
     }
+
+    queuePendingRename?.let { queue ->
+        TextFieldDialog(
+            icon = { Icon(painter = painterResource(R.drawable.edit), contentDescription = null) },
+            title = { Text(stringResource(R.string.rename_queue)) },
+            onDismiss = { queuePendingRename = null },
+            initialTextFieldValue = TextFieldValue(queue.title, TextRange(queue.title.length)),
+            placeholder = { Text(stringResource(R.string.queue_name)) },
+            onDone = { name ->
+                queuePendingRename = null
+                if (name.isNotBlank()) viewModel.rename(queue, name)
+            },
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QueueCard(
     queue: QueueEntity,
@@ -173,18 +205,23 @@ private fun QueueCard(
     previewSongs: List<MediaMetadata>,
     onPlay: () -> Unit,
     onDelete: () -> Unit,
+    onRename: () -> Unit,
     onExpand: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
-            .clickable {
-                expanded = !expanded
-                if (expanded) onExpand()
-            },
+            // Tapping the row is the primary action: open/resume this queue (or restore it, if
+            // archived) - not just toggle the inline preview, which used to be the only thing a
+            // tap did. Long-press opens the (growable) per-row action menu.
+            .combinedClickable(
+                onClick = onPlay,
+                onLongClick = { showMenu = true },
+            ),
         colors = if (isActive) {
             CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
         } else {
@@ -221,19 +258,55 @@ private fun QueueCard(
                     )
                 }
             }
-            IconButton(onClick = onPlay) {
+            if (archived) {
+                IconButton(onClick = onPlay) {
+                    Icon(
+                        painter = painterResource(R.drawable.restore),
+                        contentDescription = stringResource(R.string.unarchive_queue),
+                    )
+                }
+            }
+            IconButton(onClick = {
+                expanded = !expanded
+                if (expanded) onExpand()
+            }) {
                 Icon(
-                    painter = painterResource(if (archived) R.drawable.restore else R.drawable.play),
-                    contentDescription = stringResource(
-                        if (archived) R.string.unarchive_queue else R.string.switch_to_queue,
-                    ),
+                    painter = painterResource(if (expanded) R.drawable.expand_less else R.drawable.expand_more),
+                    contentDescription = null,
                 )
             }
-            IconButton(onClick = onDelete) {
-                Icon(
-                    painter = painterResource(R.drawable.delete),
-                    contentDescription = stringResource(R.string.delete_queue),
-                )
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(
+                        painter = painterResource(R.drawable.more_vert),
+                        contentDescription = stringResource(R.string.queue_actions),
+                    )
+                }
+                // Deliberately a plain two-item menu, not a plugin system - rename is the only
+                // action Fletcher asked for today, but this is where delete/archive/pin-style
+                // actions get added next, per FLETCHTUNES-QUEUES.md.
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.rename_queue)) },
+                        leadingIcon = {
+                            Icon(painter = painterResource(R.drawable.edit), contentDescription = null)
+                        },
+                        onClick = {
+                            showMenu = false
+                            onRename()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.delete_queue)) },
+                        leadingIcon = {
+                            Icon(painter = painterResource(R.drawable.delete), contentDescription = null)
+                        },
+                        onClick = {
+                            showMenu = false
+                            onDelete()
+                        },
+                    )
+                }
             }
         }
 

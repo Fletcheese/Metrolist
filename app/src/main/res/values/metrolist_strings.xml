@@ -1008,4 +1008,7 @@
     <string name="delete_queue_confirm">Delete this queue? This can\'t be undone.</string>
     <string name="unarchive_queue">Restore</string>
     <string name="queue_archived_hint">Auto-archived after a week unused</string>
+    <string name="rename_queue">Rename queue</string>
+    <string name="queue_actions">Queue actions</string>
+    <string name="queue_name">Queue name</string>
 </resources>

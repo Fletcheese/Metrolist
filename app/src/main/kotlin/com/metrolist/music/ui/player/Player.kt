@@ -813,6 +813,16 @@ fun BottomSheetPlayer(
             initialAnchor = 1,
         )
 
+    // Parallel queues: tapping a queue row in the Queues tab fires this so the player's own
+    // Queue page comes up directly, not just the Now Playing view - see
+    // PlayerConnection.openQueueSheetEvent / MainActivity's matching collector for the outer
+    // player sheet.
+    LaunchedEffect(playerConnection) {
+        playerConnection.openQueueSheetEvent.collect {
+            queueSheetState.expandSoft()
+        }
+    }
+
     val bottomSheetBackgroundColor =
         when (playerBackground) {
             PlayerBackgroundStyle.BLUR, PlayerBackgroundStyle.GRADIENT -> {

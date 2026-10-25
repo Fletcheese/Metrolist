@@ -49,4 +49,8 @@ constructor(
     fun unarchive(queue: QueueEntity) {
         viewModelScope.launch { queueBoard.unarchive(queue.id) }
     }
+
+    fun rename(queue: QueueEntity, title: String) {
+        viewModelScope.launch { queueBoard.rename(queue.id, title) }
+    }
 }

@@ -201,7 +201,9 @@ fun AppearanceSettings(
     val (defaultOpenTab, onDefaultOpenTabChange) =
         rememberEnumPreference(
             DefaultOpenTabKey,
-            defaultValue = NavigationTab.HOME,
+            // Fletcher's call: FletchTunes opens straight to the Queues tab by default now
+            // (still just a preference - pick Home/Search/Library instead here if you want).
+            defaultValue = NavigationTab.QUEUES,
         )
     val (playerButtonsStyle, onPlayerButtonsStyleChange) =
         rememberEnumPreference(
@@ -602,6 +604,7 @@ fun AppearanceSettings(
                     NavigationTab.HOME -> stringResource(R.string.home)
                     NavigationTab.SEARCH -> stringResource(R.string.search)
                     NavigationTab.LIBRARY -> stringResource(R.string.filter_library)
+                    NavigationTab.QUEUES -> stringResource(R.string.queues)
                 }
             },
         )
@@ -1569,6 +1572,7 @@ fun AppearanceSettings(
                                     NavigationTab.HOME -> stringResource(R.string.home)
                                     NavigationTab.SEARCH -> stringResource(R.string.search)
                                     NavigationTab.LIBRARY -> stringResource(R.string.filter_library)
+                                    NavigationTab.QUEUES -> stringResource(R.string.queues)
                                 },
                             )
                         },
@@ -1883,6 +1887,7 @@ enum class NavigationTab {
     HOME,
     SEARCH,
     LIBRARY,
+    QUEUES,
 }
 
 enum class LyricsPosition {

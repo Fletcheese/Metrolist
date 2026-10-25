@@ -39,8 +39,10 @@ import com.metrolist.music.utils.get
 import com.metrolist.music.utils.reportException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
@@ -239,7 +241,18 @@ class PlayerConnection(
         Timber.tag(TAG).d("Attached to new player instance: $newPlayer")
     }
 
-    fun playQueue(queue: Queue) {
+    // Parallel queues: fired when something (e.g. tapping a queue row in the Queues tab) wants
+    // the player to come all the way up to its Queue page, not just appear as a mini player.
+    // MainActivity expands the outer player bottom sheet on this; Player.kt's own Queue sheet
+    // expands itself the same way - see their respective LaunchedEffect collectors.
+    private val _openQueueSheetEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val openQueueSheetEvent = _openQueueSheetEvent.asSharedFlow()
+
+    fun requestOpenQueueSheet() {
+        _openQueueSheetEvent.tryEmit(Unit)
+    }
+
+    fun playQueue(queue: Queue, resumeBoardQueueId: String? = null) {
         // Block if Listen Together guest (unless internal sync)
         if (!allowInternalSync && shouldBlockPlaybackChanges?.invoke() == true) {
             Timber.tag("PlayerConnection").d("playQueue blocked - Listen Together guest")
@@ -249,7 +262,7 @@ class PlayerConnection(
             Timber.tag(TAG).w("playQueue called before player ready; delegating to service")
         }
         try {
-            service.playQueue(queue)
+            service.playQueue(queue, resumeBoardQueueId = resumeBoardQueueId)
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Error in playQueue")
             throw e

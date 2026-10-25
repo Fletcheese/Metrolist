@@ -753,12 +753,12 @@ class MainActivity : FragmentActivity() {
                 val (forceBottomNav) = rememberPreference(ForceBottomNavBarKey, defaultValue = false)
                 val (slimNav) = rememberPreference(SlimNavBarKey, defaultValue = false)
                 val (useNewMiniPlayerDesign) = rememberPreference(UseNewMiniPlayerDesignKey, defaultValue = true)
-                val (defaultOpenTabInt) = rememberPreference(DefaultOpenTabKey, defaultValue = NavigationTab.HOME.name)
+                val (defaultOpenTabInt) = rememberPreference(DefaultOpenTabKey, defaultValue = NavigationTab.QUEUES.name)
                 val defaultOpenTab = remember(defaultOpenTabInt) {
                     try {
                         NavigationTab.valueOf(defaultOpenTabInt)
                     } catch (_: IllegalArgumentException) {
-                        NavigationTab.HOME
+                        NavigationTab.QUEUES
                     }
                 }
                 val tabOpenedFromShortcut =
@@ -964,6 +964,16 @@ class MainActivity : FragmentActivity() {
                     player.addListener(listener)
                     onDispose {
                         player.removeListener(listener)
+                    }
+                }
+
+                // Parallel queues: tapping a queue row in the Queues tab requests the player
+                // come all the way up (not just the mini player), per PlayerConnection's
+                // openQueueSheetEvent. Player.kt's own inner Queue sheet expands itself on the
+                // same event.
+                LaunchedEffect(playerConnection) {
+                    playerConnection?.openQueueSheetEvent?.collect {
+                        playerBottomSheetState.expandSoft()
                     }
                 }
 
@@ -1347,6 +1357,7 @@ class MainActivity : FragmentActivity() {
                                             NavigationTab.HOME -> Screens.Home
                                             NavigationTab.SEARCH -> Screens.Search
                                             NavigationTab.LIBRARY -> Screens.Library
+                                            NavigationTab.QUEUES -> Screens.Queues
                                         }.route,
                                     enterTransition = {
                                         val currentRouteIndex = routeIndexMap[targetState.destination.route] ?: -1

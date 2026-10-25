@@ -1193,34 +1193,69 @@ class MusicService :
             dataStore.data.map { it[AutoLoadMoreKey] ?: true }.distinctUntilChanged().collect { cachedAutoLoadMore = it }
         }
         if (startupPrefs!![PersistentQueueKey] ?: true) {
-            val queueFile = filesDir.resolve(PERSISTENT_QUEUE_FILE)
-            if (queueFile.exists()) {
+            // Parallel queues: before falling back to the legacy single-queue file, check
+            // whether a QueueBoard (Room) queue is already the most-recently-played one - if
+            // so, resume *that* row directly instead of letting the legacy file mint a 3rd
+            // duplicate QueueBoard entry on every cold start (FLETCHTUNES-QUEUES.md rows 62/73).
+            // QueueBoard's own lastPlayedAt ordering already tells us which queue was "last
+            // active," so no separate preference/DataStore key is needed.
+            val lastActiveBoardQueue =
                 runCatching {
-                    queueFile.inputStream().use { fis ->
-                        ObjectInputStream(fis).use { oos ->
-                            oos.readObject() as PersistQueue
-                        }
+                    runBlocking(Dispatchers.IO) { queueBoard.mostRecentQueue() }
+                }.onFailure { error ->
+                    Timber.tag(TAG).w(error, "Failed to look up last active QueueBoard queue")
+                }.getOrNull()?.takeIf { it.second.isNotEmpty() }
+
+            if (lastActiveBoardQueue != null) {
+                val (queueEntity, songs) = lastActiveBoardQueue
+                scope.launch {
+                    playerInitialized.first { it }
+                    if (isActive) {
+                        playQueue(
+                            queue =
+                                ListQueue(
+                                    title = queueEntity.title,
+                                    items = songs.map { it.toMediaItem() },
+                                    startIndex = queueEntity.currentIndex.coerceIn(0, songs.size - 1),
+                                    position = queueEntity.positionMs,
+                                    sourceKey = queueEntity.sourceKey,
+                                ),
+                            playWhenReady = false,
+                            restoringQueue = true,
+                            resumeBoardQueueId = queueEntity.id,
+                        )
                     }
-                }.onSuccess { queue ->
+                }
+            } else {
+                val queueFile = filesDir.resolve(PERSISTENT_QUEUE_FILE)
+                if (queueFile.exists()) {
                     runCatching {
-                        val restoredQueue = queue.toQueue()
-                        scope.launch {
-                            playerInitialized.first { it }
-                            if (isActive) {
-                                playQueue(
-                                    queue = restoredQueue,
-                                    playWhenReady = false,
-                                    restoringQueue = true,
-                                )
+                        queueFile.inputStream().use { fis ->
+                            ObjectInputStream(fis).use { oos ->
+                                oos.readObject() as PersistQueue
                             }
                         }
+                    }.onSuccess { queue ->
+                        runCatching {
+                            val restoredQueue = queue.toQueue()
+                            scope.launch {
+                                playerInitialized.first { it }
+                                if (isActive) {
+                                    playQueue(
+                                        queue = restoredQueue,
+                                        playWhenReady = false,
+                                        restoringQueue = true,
+                                    )
+                                }
+                            }
+                        }.onFailure { error ->
+                            Timber.tag(TAG).w(error, "Failed to restore persisted queue, clearing data")
+                            clearPersistedQueueFiles()
+                        }
                     }.onFailure { error ->
-                        Timber.tag(TAG).w(error, "Failed to restore persisted queue, clearing data")
+                        Timber.tag(TAG).w(error, "Failed to read persisted queue, clearing data")
                         clearPersistedQueueFiles()
                     }
-                }.onFailure { error ->
-                    Timber.tag(TAG).w(error, "Failed to read persisted queue, clearing data")
-                    clearPersistedQueueFiles()
                 }
             }
 
@@ -1807,13 +1842,18 @@ class MusicService :
         queue: Queue,
         playWhenReady: Boolean = true,
         restoringQueue: Boolean = false,
+        // Parallel queues: when resuming a specific QueueBoard row (cold-start restore, or
+        // switching to a queue from the Queues tab), pass its id here so this reuses that exact
+        // row via queueBoard.switchTo() instead of going through startQueue()'s sourceKey
+        // lookup - which can miss (e.g. a null-sourceKey ad hoc queue) and mint a duplicate row.
+        resumeBoardQueueId: String? = null,
     ) {
         if (taskCleared) return
         if (!playerInitialized.value) {
             Timber.tag(TAG).w("playQueue called before player initialization, queuing request")
             scope.launch {
                 playerInitialized.first { it }
-                playQueue(queue, playWhenReady)
+                playQueue(queue, playWhenReady, restoringQueue, resumeBoardQueueId)
             }
             return
         }
@@ -1883,26 +1923,38 @@ class MusicService :
             // existing board id instead of minting a new row.
             val boardItems = initialStatus.items.mapNotNull { it.metadata }
             if (boardItems.isNotEmpty()) {
-                // player.shuffleModeEnabled must be read here, on the main thread (playQueue's
-                // coroutine runs with SilentHandler/Main), NOT inside the Dispatchers.IO block
-                // below - ExoPlayer throws IllegalStateException ("Player is accessed on the
-                // wrong thread") if touched off the application thread. That exception was being
-                // swallowed by runCatching, so queueBoard.startQueue() silently never ran on
-                // every single playQueue() call - the actual cause of the queue/queue_song_map
-                // tables staying empty, not a timing/race issue.
-                val shuffled = player.shuffleModeEnabled
-                applicationScope.launch(Dispatchers.IO) {
-                    runCatching {
-                        queueBoard.startQueue(
-                            sourceKey = queue.queueSourceKey,
-                            title = initialStatus.title ?: queueTitle ?: "Queue",
-                            items = boardItems,
-                            startIndex = initialStatus.mediaItemIndex,
-                            shuffled = shuffled,
-                        )
-                    }.onSuccess { id ->
-                        activeQueueBoardId = id
-                    }.onFailure { Timber.tag(TAG).e(it, "Failed to record queue in QueueBoard") }
+                if (resumeBoardQueueId != null) {
+                    // Resuming a known row (cold-start restore, or the Queues tab switching to
+                    // an existing queue): reuse it by id, don't go through the sourceKey lookup
+                    // in startQueue() below, which can fail to match (e.g. a null-sourceKey ad
+                    // hoc queue) and mint a duplicate row instead of reusing this one.
+                    activeQueueBoardId = resumeBoardQueueId
+                    applicationScope.launch(Dispatchers.IO) {
+                        runCatching { queueBoard.switchTo(resumeBoardQueueId) }
+                            .onFailure { Timber.tag(TAG).e(it, "Failed to mark resumed queue active") }
+                    }
+                } else {
+                    // player.shuffleModeEnabled must be read here, on the main thread (playQueue's
+                    // coroutine runs with SilentHandler/Main), NOT inside the Dispatchers.IO block
+                    // below - ExoPlayer throws IllegalStateException ("Player is accessed on the
+                    // wrong thread") if touched off the application thread. That exception was being
+                    // swallowed by runCatching, so queueBoard.startQueue() silently never ran on
+                    // every single playQueue() call - the actual cause of the queue/queue_song_map
+                    // tables staying empty, not a timing/race issue.
+                    val shuffled = player.shuffleModeEnabled
+                    applicationScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            queueBoard.startQueue(
+                                sourceKey = queue.queueSourceKey,
+                                title = initialStatus.title ?: queueTitle ?: "Queue",
+                                items = boardItems,
+                                startIndex = initialStatus.mediaItemIndex,
+                                shuffled = shuffled,
+                            )
+                        }.onSuccess { id ->
+                            activeQueueBoardId = id
+                        }.onFailure { Timber.tag(TAG).e(it, "Failed to record queue in QueueBoard") }
+                    }
                 }
             }
         }
