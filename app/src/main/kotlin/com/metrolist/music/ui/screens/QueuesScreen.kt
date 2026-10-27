@@ -246,7 +246,11 @@ private fun QueueCard(
                     maxLines = 1,
                 )
                 Text(
-                    text = stringResource(R.string.queue_song_count, queue.songCount),
+                    text = stringResource(
+                        R.string.queue_position,
+                        (queue.currentIndex + 1).coerceIn(1, queue.songCount.coerceAtLeast(1)),
+                        queue.songCount,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

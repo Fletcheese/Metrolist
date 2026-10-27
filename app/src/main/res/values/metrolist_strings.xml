@@ -1000,7 +1000,7 @@
     <string name="archived_queues">Archived queues</string>
     <string name="no_active_queues">No active queues yet. Start playing something to create one.</string>
     <string name="no_archived_queues">No archived queues</string>
-    <string name="queue_song_count">%1$d songs</string>
+    <string name="queue_position">Song %1$d of %2$d</string>
     <string name="queue_now_playing">Now playing</string>
     <string name="queue_last_played">Last played %1$s</string>
     <string name="switch_to_queue">Switch</string>

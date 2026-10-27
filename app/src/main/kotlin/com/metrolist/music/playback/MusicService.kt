@@ -1882,6 +1882,11 @@ class MusicService :
         if (!persistShuffleAcrossQueues && !restoringQueue) {
             player.shuffleModeEnabled = false
         }
+        if (resumeBoardQueueId != null) {
+            // A saved queue is stored in play order, i.e. already shuffled if it was playing
+            // shuffled. Shuffling it again would lose the user's place in that order.
+            player.shuffleModeEnabled = false
+        }
         originalQueueSize = 0
         if (queue.preloadItem != null) {
             player.setMediaItem(queue.preloadItem!!.toMediaItem())
@@ -2927,6 +2932,10 @@ class MusicService :
                 syncActiveQueueToBoard()
             }
         }
+        if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) && !events.contains(EVENT_TIMELINE_CHANGED)) {
+            // Keeps each queue's "song N of M" current as it plays through.
+            recordActiveQueuePlayback()
+        }
 
         if (events.containsAny(Player.EVENT_IS_PLAYING_CHANGED)) {
             updateWidgetUI(player.isPlaying)
@@ -2970,6 +2979,8 @@ class MusicService :
 
             applyShuffleOrder(currentIndex, totalCount, shufflePlaylistFirst)
         }
+        // The play order just changed, and QueueBoard stores queues in play order.
+        syncActiveQueueToBoard()
 
         if (dataStore.get(RememberShuffleAndRepeatKey, true)) {
             scope.launch {
@@ -4230,14 +4241,48 @@ class MusicService :
     private fun syncActiveQueueToBoard() {
         val id = activeQueueBoardId ?: return
         if (player.mediaItemCount == 0) return
-        val items = player.mediaItems.mapNotNull { it.metadata }
-        if (items.isEmpty()) return
-        val index = player.currentMediaItemIndex
+        // Saved in play order (the shuffle order when shuffle is on), so a queue's saved index
+        // is "how far through it you are" and resuming it continues the same shuffle.
+        val order = playOrderIndices()
+        val items = order.mapNotNull { player.getMediaItemAt(it).metadata }
+        if (items.isEmpty() || items.size != order.size) return
+        val index = order.indexOf(player.currentMediaItemIndex).coerceAtLeast(0)
         applicationScope.launch(Dispatchers.IO) {
             runCatching {
                 queueBoard.recordQueueEdit(id, items, index)
             }.onFailure { Timber.tag(TAG).e(it, "Failed to sync queue edit to QueueBoard") }
         }
+    }
+
+    /**
+     * Records where the active QueueBoard queue is up to (its play-order index, the current song
+     * and the position within it) without rewriting its song list. Must run on the main thread.
+     */
+    private fun recordActiveQueuePlayback() {
+        val id = activeQueueBoardId ?: return
+        if (player.mediaItemCount == 0) return
+        val index = playOrderIndices().indexOf(player.currentMediaItemIndex)
+        if (index < 0) return
+        val songId = player.currentMediaItem?.mediaId
+        val positionMs = player.currentPosition.coerceAtLeast(0L)
+        applicationScope.launch(Dispatchers.IO) {
+            runCatching { queueBoard.recordPlaybackState(id, index, songId, positionMs) }
+                .onFailure { Timber.tag(TAG).e(it, "Failed to record queue playback state") }
+        }
+    }
+
+    /** Media item indices in the order the player will actually play them. */
+    private fun playOrderIndices(): List<Int> {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return emptyList()
+        val shuffle = player.shuffleModeEnabled
+        val order = ArrayList<Int>(timeline.windowCount)
+        var index = timeline.getFirstWindowIndex(shuffle)
+        while (index != C.INDEX_UNSET && order.size < timeline.windowCount) {
+            order += index
+            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, shuffle)
+        }
+        return order
     }
 
     private fun saveQueueToDisk() {
