@@ -133,6 +133,7 @@ import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.queues.ListQueue
 import com.metrolist.music.playback.queues.LocalAlbumRadio
 import com.metrolist.music.playback.queues.YouTubeAlbumRadio
+import com.metrolist.music.playback.queues.YouTubePlaylistQueue
 import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.ui.component.AlbumGridItem
 import com.metrolist.music.ui.component.ArtistGridItem
@@ -1600,22 +1601,50 @@ fun HomeScreen(
                                                                                                 title = item.title,
                                                                                                 items = listOf(item.toMediaItem()),
                                                                                             ),
+                                                                                            newBoardQueue = true,
                                                                                         )
                                                                                         playerConnection.player.shuffleModeEnabled = true
                                                                                     }
 
                                                                                     is AlbumItem -> {
-                                                                                        playerConnection.playQueue(YouTubeAlbumRadio(item.playlistId))
+                                                                                        playerConnection.playQueue(YouTubeAlbumRadio(item.playlistId), newBoardQueue = true)
                                                                                         playerConnection.player.shuffleModeEnabled = true
                                                                                     }
 
                                                                                     is PlaylistItem -> {
+                                                                                        // Pinned tiles are rebuilt from SpeedDialItem with no
+                                                                                        // endpoints at all, so they need their own path: local
+                                                                                        // playlists shuffle their songs from the database,
+                                                                                        // online ones load the playlist and shuffle the player.
+                                                                                        val rawType = pinnedSpeedDialItems.find { it.id == item.id }?.type
                                                                                         val endpoint = item.shuffleEndpoint ?: item.playEndpoint
-                                                                                        if (endpoint != null) {
-                                                                                            playerConnection.playQueue(YouTubeQueue(endpoint))
+                                                                                        if (rawType == "LOCAL_PLAYLIST") {
+                                                                                            scope.launch {
+                                                                                                val songs =
+                                                                                                    withContext(Dispatchers.IO) {
+                                                                                                        database.playlistSongs(item.id).first()
+                                                                                                    }
+                                                                                                if (songs.isNotEmpty()) {
+                                                                                                    playerConnection.playQueue(
+                                                                                                        ListQueue(
+                                                                                                            title = item.title,
+                                                                                                            items = songs.shuffled().map { it.song.toMediaItem() },
+                                                                                                        ),
+                                                                                                        newBoardQueue = true,
+                                                                                                    )
+                                                                                                }
+                                                                                            }
+                                                                                        } else if (endpoint != null) {
+                                                                                            playerConnection.playQueue(YouTubeQueue(endpoint), newBoardQueue = true)
                                                                                             if (item.shuffleEndpoint == null) {
                                                                                                 playerConnection.player.shuffleModeEnabled = true
                                                                                             }
+                                                                                        } else {
+                                                                                            playerConnection.playQueue(
+                                                                                                YouTubePlaylistQueue(playlistId = item.id, playlistTitle = item.title),
+                                                                                                newBoardQueue = true,
+                                                                                            )
+                                                                                            playerConnection.player.shuffleModeEnabled = true
                                                                                         }
                                                                                     }
 
@@ -1625,6 +1654,7 @@ fun HomeScreen(
                                                                                                 title = item.title,
                                                                                                 items = listOf(item.toMediaMetadata().toMediaItem()),
                                                                                             ),
+                                                                                            newBoardQueue = true,
                                                                                         )
                                                                                         playerConnection.player.shuffleModeEnabled = true
                                                                                     }
