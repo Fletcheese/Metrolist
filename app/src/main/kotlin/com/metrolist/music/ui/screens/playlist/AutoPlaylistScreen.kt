@@ -924,6 +924,7 @@ private fun AutoPlaylistHeader(
                             title = name,
                             items = songs.shuffled().map { it.toMediaItem() },
                         ),
+                        newBoardQueue = true,
                     )
                 },
                 shape = androidx.compose.foundation.shape.CircleShape,

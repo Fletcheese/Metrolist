@@ -303,7 +303,14 @@ class MusicService :
     lateinit var queueBoard: com.metrolist.music.playback.queue.QueueBoard
 
     /** Room-backed id of the currently active parallel queue (see QueueBoard), if any. */
+    @Volatile
     private var activeQueueBoardId: String? = null
+
+    /**
+     * Bumped on every playQueue() so a slow QueueBoard.startQueue() for an earlier queue can't
+     * claim activeQueueBoardId after a newer queue has already started.
+     */
+    private var boardQueueGeneration = 0
 
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -1847,16 +1854,27 @@ class MusicService :
         // row via queueBoard.switchTo() instead of going through startQueue()'s sourceKey
         // lookup - which can miss (e.g. a null-sourceKey ad hoc queue) and mint a duplicate row.
         resumeBoardQueueId: String? = null,
+        // Parallel queues: always mint a new QueueBoard row instead of reusing the one for this
+        // queue's source. Used by every "shuffle play" entry point, which should start a fresh
+        // queue and never reset an existing one's progress.
+        newBoardQueue: Boolean = false,
     ) {
         if (taskCleared) return
         if (!playerInitialized.value) {
             Timber.tag(TAG).w("playQueue called before player initialization, queuing request")
             scope.launch {
                 playerInitialized.first { it }
-                playQueue(queue, playWhenReady, restoringQueue, resumeBoardQueueId)
+                playQueue(queue, playWhenReady, restoringQueue, resumeBoardQueueId, newBoardQueue)
             }
             return
         }
+        // Detach from the outgoing QueueBoard row *before* the player's items change. Otherwise
+        // the EVENT_TIMELINE_CHANGED fired by setMediaItem(s) below reaches
+        // syncActiveQueueToBoard() while activeQueueBoardId still names the old queue, and the
+        // new source's songs overwrite that queue (FletchTunes bug 1). The new id is set once
+        // the new row exists, further down.
+        activeQueueBoardId = null
+        val generation = ++boardQueueGeneration
 
         currentQueue = queue
         queueTitle = null
@@ -1922,7 +1940,7 @@ class MusicService :
             // OuterTune's model (FLETCHTUNES-QUEUES.md Phase 2b). Restored queues keep their
             // existing board id instead of minting a new row.
             val boardItems = initialStatus.items.mapNotNull { it.metadata }
-            if (boardItems.isNotEmpty()) {
+            if (boardItems.isNotEmpty() && generation == boardQueueGeneration) {
                 if (resumeBoardQueueId != null) {
                     // Resuming a known row (cold-start restore, or the Queues tab switching to
                     // an existing queue): reuse it by id, don't go through the sourceKey lookup
@@ -1945,14 +1963,22 @@ class MusicService :
                     applicationScope.launch(Dispatchers.IO) {
                         runCatching {
                             queueBoard.startQueue(
-                                sourceKey = queue.queueSourceKey,
+                                sourceKey = if (newBoardQueue) null else queue.queueSourceKey,
                                 title = initialStatus.title ?: queueTitle ?: "Queue",
                                 items = boardItems,
                                 startIndex = initialStatus.mediaItemIndex,
                                 shuffled = shuffled,
                             )
                         }.onSuccess { id ->
-                            activeQueueBoardId = id
+                            withContext(Dispatchers.Main) {
+                                // A newer playQueue() may have started while this row was being
+                                // written; only the latest queue gets to be the active one.
+                                if (generation != boardQueueGeneration) return@withContext
+                                activeQueueBoardId = id
+                                // Catch up on anything the player changed while the row was
+                                // being created (e.g. a radio queue's first extra page).
+                                syncActiveQueueToBoard()
+                            }
                         }.onFailure { Timber.tag(TAG).e(it, "Failed to record queue in QueueBoard") }
                     }
                 }

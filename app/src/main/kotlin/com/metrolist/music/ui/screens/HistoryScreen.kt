@@ -419,6 +419,7 @@ fun HistoryScreen(
                                 title = historyTitle,
                                 items = songs.map { it.toMediaItem() }.shuffled(),
                             ),
+                            newBoardQueue = true,
                         )
                     }
                 } else {
@@ -427,6 +428,7 @@ fun HistoryScreen(
                             title = historyTitle,
                             items = allEvents.map { it.song.toMediaItem() }.shuffled(),
                         ),
+                        newBoardQueue = true,
                     )
                 }
             },

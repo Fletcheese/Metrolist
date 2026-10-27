@@ -146,6 +146,7 @@ fun ArtistMenu(
                                                     title = artist.artist.name,
                                                     items = songs,
                                                 ),
+                                                newBoardQueue = true,
                                             )
                                         }
                                         onDismiss()

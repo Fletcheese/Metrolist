@@ -343,6 +343,7 @@ fun AlbumMenu(
                                                 title = album.album.title,
                                                 items = songs.shuffled().map(Song::toMediaItem),
                                             ),
+                                            newBoardQueue = true,
                                         )
                                     }
                                 },

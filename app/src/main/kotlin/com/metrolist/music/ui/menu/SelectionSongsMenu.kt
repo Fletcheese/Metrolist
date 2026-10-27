@@ -341,6 +341,7 @@ fun SelectionSongMenu(
                                             title = "Selection",
                                             items = songSelection.shuffled().map { it.toMediaItem() },
                                         ),
+                                        newBoardQueue = true,
                                     )
                                     clearAction()
                                 },
@@ -405,6 +406,7 @@ fun SelectionSongMenu(
                                                 title = "Selection",
                                                 items = songSelection.shuffled().map { it.toMediaItem() },
                                             ),
+                                            newBoardQueue = true,
                                         )
                                         clearAction()
                                     },
@@ -838,6 +840,7 @@ fun SelectionMediaMetadataMenu(
                                                 title = "Selection",
                                                 items = songSelection.shuffled().map { it.toMediaItem() },
                                             ),
+                                            newBoardQueue = true,
                                         )
                                         clearAction()
                                     },

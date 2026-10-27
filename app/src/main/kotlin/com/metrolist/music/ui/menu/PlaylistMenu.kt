@@ -358,6 +358,7 @@ fun PlaylistMenu(
                                                 title = playlist.playlist.name,
                                                 items = songs.shuffled().map(Song::toMediaItem),
                                             ),
+                                            newBoardQueue = true,
                                         )
                                     }
                                 },

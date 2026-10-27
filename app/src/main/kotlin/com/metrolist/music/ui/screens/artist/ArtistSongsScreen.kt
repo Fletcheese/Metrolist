@@ -206,6 +206,7 @@ fun ArtistSongsScreen(
                         title = artist?.artist?.name,
                         items = songs.shuffled().map { it.toMediaItem() },
                     ),
+                    newBoardQueue = true,
                 )
             },
         )

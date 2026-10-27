@@ -473,6 +473,7 @@ fun LibraryPodcastsScreen(
                                 title = downloadedEpisodesStr,
                                 items = downloadedEpisodes.shuffled().map { it.toMediaItem() },
                             ),
+                            newBoardQueue = true,
                         )
                     },
                 )

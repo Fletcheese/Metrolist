@@ -665,6 +665,7 @@ fun StatsScreen(
                             title = context.getString(R.string.most_played_songs),
                             items = orderedMostPlayedSongs.map { it.toMediaMetadata().toMediaItem() }.shuffled(),
                         ),
+                        newBoardQueue = true,
                     )
                 },
             )

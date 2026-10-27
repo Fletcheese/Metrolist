@@ -500,6 +500,7 @@ fun LibrarySongsScreen(
                             title = queueAllSongsStr,
                             items = filteredSongs.shuffled().map { it.toMediaItem() },
                         ),
+                        newBoardQueue = true,
                     )
                 }
             },

@@ -1328,6 +1328,7 @@ fun LocalPlaylistHeader(
                             title = playlist.playlist.name,
                             items = songs.shuffled().map { it.song.toMediaItem() },
                         ),
+                        newBoardQueue = true,
                     )
                 },
                 shape = CircleShape,

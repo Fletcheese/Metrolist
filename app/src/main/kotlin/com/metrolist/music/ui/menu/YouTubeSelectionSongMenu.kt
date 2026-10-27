@@ -251,6 +251,7 @@ fun YouTubeSelectionSongMenu(
                                         title = queueAllSongsStr,
                                         items = songSelection.shuffled().map { it.toMediaItem() },
                                     ),
+                                    newBoardQueue = true,
                                 )
                                 clearAction()
                                 onDismiss()

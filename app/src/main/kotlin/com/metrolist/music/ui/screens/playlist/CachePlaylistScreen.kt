@@ -543,7 +543,8 @@ private fun CachePlaylistHeader(
                         ListQueue(
                             title = "Cache Songs",
                             items = songs.shuffled().map { it.toMediaItem() },
-                        )
+                        ),
+                        newBoardQueue = true,
                     )
                 },
                 shape = androidx.compose.foundation.shape.CircleShape,
