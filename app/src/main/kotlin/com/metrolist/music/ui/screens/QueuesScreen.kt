@@ -81,6 +81,12 @@ fun QueuesScreen(
     // is active underneath. resumeBoardQueueId tells playQueue() to reuse this exact row rather
     // than re-deriving (and possibly duplicating) it via sourceKey matching.
     fun switchTo(queue: QueueEntity) {
+        // Already playing this queue: just show it. Replaying it would jump back to the last
+        // saved position, which can be a few seconds behind the live one.
+        if (queue.id == activeQueueId && (playerConnection?.player?.mediaItemCount ?: 0) > 0) {
+            playerConnection?.requestOpenQueueSheet()
+            return
+        }
         scope.launch {
             val songs = viewModel.queueBoard.loadSongs(queue.id)
             if (songs.isEmpty()) return@launch

@@ -105,7 +105,12 @@ class QueueBoard @Inject constructor(
         startQueue(sourceKey = null, title = title, items = items)
 
     /** Call on every queue mutation (add/remove/move/play-next) — not on a timer. */
-    suspend fun recordQueueEdit(id: String, items: List<MediaMetadata>, currentIndex: Int? = null) =
+    suspend fun recordQueueEdit(
+        id: String,
+        items: List<MediaMetadata>,
+        currentIndex: Int? = null,
+        positionMs: Long? = null,
+    ) =
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 ensureSongsExist(items)
@@ -115,7 +120,7 @@ class QueueBoard @Inject constructor(
                         id = id,
                         index = currentIndex,
                         songId = items.getOrNull(currentIndex)?.id,
-                        positionMs = queueDao.getQueueOnce(id)?.positionMs ?: 0L,
+                        positionMs = positionMs ?: queueDao.getQueueOnce(id)?.positionMs ?: 0L,
                         timestamp = System.currentTimeMillis(),
                     )
                 } else {
@@ -124,9 +129,14 @@ class QueueBoard @Inject constructor(
             }
         }
 
+    /**
+     * Where a queue is up to, including the position within the current song. Deliberately
+     * leaves lastPlayedAt alone: this also saves the *outgoing* queue on a switch, and touching
+     * it could make that queue the "most recent" one on cold start.
+     */
     suspend fun recordPlaybackState(id: String, index: Int, songId: String?, positionMs: Long) =
         withContext(Dispatchers.IO) {
-            queueDao.updatePlaybackState(id, index, songId, positionMs, System.currentTimeMillis())
+            mutex.withLock { queueDao.updatePlaybackPosition(id, index, songId, positionMs) }
         }
 
     suspend fun setShuffled(id: String, shuffled: Boolean) =

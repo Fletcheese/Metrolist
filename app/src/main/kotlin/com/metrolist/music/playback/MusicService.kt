@@ -1303,7 +1303,9 @@ class MusicService :
                         // player.shuffleModeEnabled = playerState.shuffleModeEnabled
                         playerVolume.value = playerState.volume
 
-                        if (playerState.currentMediaItemIndex < player.mediaItemCount) {
+                        // A QueueBoard restore already starts at its own saved song and position
+                        // (stored in play order, which this legacy index doesn't know about).
+                        if (lastActiveBoardQueue == null && playerState.currentMediaItemIndex < player.mediaItemCount) {
                             player.seekTo(playerState.currentMediaItemIndex, playerState.currentPosition)
                         }
                     }
@@ -1311,6 +1313,15 @@ class MusicService :
                     Timber.tag(TAG).w(error, "Failed to read player state, clearing data")
                     clearPersistedQueueFiles()
                 }
+            }
+        }
+
+        // Parallel queues: keep the active queue's in-song position fresh, so switching back to
+        // it (or a force kill) resumes close to where it was rather than at the song's start.
+        scope.launch {
+            while (isActive) {
+                delay(10.seconds)
+                if (player.isPlaying) recordActiveQueuePlayback()
             }
         }
 
@@ -1872,7 +1883,9 @@ class MusicService :
         // the EVENT_TIMELINE_CHANGED fired by setMediaItem(s) below reaches
         // syncActiveQueueToBoard() while activeQueueBoardId still names the old queue, and the
         // new source's songs overwrite that queue (FletchTunes bug 1). The new id is set once
-        // the new row exists, further down.
+        // the new row exists, further down. Save where the outgoing queue was up to first, so
+        // switching back to it resumes mid-song (FletchTunes bug 4).
+        recordActiveQueuePlayback()
         activeQueueBoardId = null
         val generation = ++boardQueueGeneration
 
@@ -2934,6 +2947,8 @@ class MusicService :
         }
         if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) && !events.contains(EVENT_TIMELINE_CHANGED)) {
             // Keeps each queue's "song N of M" current as it plays through.
+            recordActiveQueuePlayback()
+        } else if (events.contains(Player.EVENT_IS_PLAYING_CHANGED) && !player.isPlaying) {
             recordActiveQueuePlayback()
         }
 
@@ -4247,9 +4262,10 @@ class MusicService :
         val items = order.mapNotNull { player.getMediaItemAt(it).metadata }
         if (items.isEmpty() || items.size != order.size) return
         val index = order.indexOf(player.currentMediaItemIndex).coerceAtLeast(0)
+        val positionMs = player.currentPosition.coerceAtLeast(0L)
         applicationScope.launch(Dispatchers.IO) {
             runCatching {
-                queueBoard.recordQueueEdit(id, items, index)
+                queueBoard.recordQueueEdit(id, items, index, positionMs)
             }.onFailure { Timber.tag(TAG).e(it, "Failed to sync queue edit to QueueBoard") }
         }
     }

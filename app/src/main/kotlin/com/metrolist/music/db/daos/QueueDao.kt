@@ -65,6 +65,17 @@ interface QueueDao {
         timestamp: Long,
     )
 
+    @Query(
+        "UPDATE queue SET currentIndex = :index, currentSongId = :songId, positionMs = :positionMs " +
+            "WHERE id = :id",
+    )
+    suspend fun updatePlaybackPosition(
+        id: String,
+        index: Int,
+        songId: String?,
+        positionMs: Long,
+    )
+
     @Query("UPDATE queue SET shuffled = :shuffled WHERE id = :id")
     suspend fun updateShuffled(id: String, shuffled: Boolean)
 
