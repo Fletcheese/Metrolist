@@ -1,5 +1,19 @@
 # FletchTunes to-do (pick up on the Linux box)
 
+## 0. Retest the four queue-bug fixes (branch `claude/fletchtunes-queue-bugs-04546c`)
+
+Fixed and pushed from Windows on 2026-10-26, after each bug was reproduced on the 6T: `faf55e2` (a new queue overwrote the active one), `834d1f4` (speed-dial shuffle did nothing on pinned playlists), `5919685` ("Song N of M" on each queue), `0200e61` (resume mid-song). The branch is based on the queues branch (`cc65d811`), not `main`; merging is Fletcher's call.
+
+Not yet retested on the phone: the Windows build could not install, because the phone's app is signed by the Linux box's debug key (cert SHA-256 `807e40c9…6ad6`). On Linux:
+
+- `git fetch && git checkout claude/fletchtunes-queue-bugs-04546c`, then `./gradlew :app:installFossDebug` (no uninstall, so the data stays).
+- Bug 1: with a queue playing, shuffle a different local playlist. Expected: a new queue appears, and the old one keeps its songs and position. Before the fix, the old queue was rewritten with the new playlist's songs at song 1.
+- Bug 2: tap the shuffle icon (top-left) on a pinned speed-dial playlist. Expected: it plays shuffled as a new queue. Before the fix, nothing happened.
+- Bug 3: the Queues tab reads "Song N of M", and N advances as tracks change.
+- Bug 4: leave a song partway through (e.g. at 1:06), switch to another queue, then tap the first one again. Expected: it resumes near 1:06. Before the fix, it restarted at 0:00.
+- What a queue is (agreed 2026-10-26): shuffle always creates a new queue, saved in its shuffled order; it is never reshuffled automatically; opening a saved queue keeps that order, so shuffle shows "off" while it plays.
+- To also build on Windows later, copy the Linux `~/.android/debug.keystore` to `app/persistent-debug.keystore` there (it is gitignored).
+
 ## 1. Option A: rebuild the debug app as "FletchTunes" (do this first)
 
 The debug build type now sets the launcher label to `FletchTunes` instead of `FletchTunes Debug`. The package id (`com.metrolist.music.debug`) and `applicationIdSuffix` are unchanged, so it installs over the current app and keeps its data.
