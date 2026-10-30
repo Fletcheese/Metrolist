@@ -341,9 +341,10 @@ fun AlbumMenu(
                                         playerConnection.playQueue(
                                             ListQueue(
                                                 title = album.album.title,
-                                                items = songs.shuffled().map(Song::toMediaItem),
+                                                items = songs.map(Song::toMediaItem),
                                             ),
                                             newBoardQueue = true,
+                                            shuffle = true,
                                         )
                                     }
                                 },

@@ -460,7 +460,7 @@ fun YouTubePlaylistMenu(
                                         },
                                         text = stringResource(R.string.start_radio),
                                         onClick = {
-                                            playerConnection.playQueue(YouTubeQueue(radioEndpoint))
+                                            playerConnection.playQueue(YouTubeQueue(radioEndpoint, isStartRadio = true))
                                             onDismiss()
                                         },
                                     ),

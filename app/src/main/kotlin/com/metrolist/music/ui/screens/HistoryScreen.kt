@@ -381,6 +381,7 @@ fun HistoryScreen(
                                                         title = dateTitle,
                                                         items = dateEvents.map { it.song.toMediaItem() },
                                                         startIndex = index,
+                                                        songOnly = true,
                                                     ),
                                                 )
                                             }
@@ -417,18 +418,20 @@ fun HistoryScreen(
                         playerConnection.playQueue(
                             ListQueue(
                                 title = historyTitle,
-                                items = songs.map { it.toMediaItem() }.shuffled(),
+                                items = songs.map { it.toMediaItem() },
                             ),
                             newBoardQueue = true,
+                            shuffle = true,
                         )
                     }
                 } else {
                     playerConnection.playQueue(
                         ListQueue(
                             title = historyTitle,
-                            items = allEvents.map { it.song.toMediaItem() }.shuffled(),
+                            items = allEvents.map { it.song.toMediaItem() },
                         ),
                         newBoardQueue = true,
+                        shuffle = true,
                     )
                 }
             },

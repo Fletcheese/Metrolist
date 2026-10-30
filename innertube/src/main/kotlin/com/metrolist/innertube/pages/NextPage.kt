@@ -16,6 +16,11 @@ data class NextResult(
     val relatedEndpoint: BrowseEndpoint? = null,
     val continuation: String?,
     val endpoint: WatchEndpoint, // current or continuation next endpoint
+    /**
+     * When the queue panel ended in YouTube's automix (its "autoplay" radio) and those songs were
+     * appended to [items], the index of the first automix song. Null when nothing was appended.
+     */
+    val automixStartIndex: Int? = null,
 )
 
 object NextPage {

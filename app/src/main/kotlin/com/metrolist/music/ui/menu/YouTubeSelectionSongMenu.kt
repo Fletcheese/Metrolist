@@ -249,9 +249,10 @@ fun YouTubeSelectionSongMenu(
                                 playerConnection.playQueue(
                                     ListQueue(
                                         title = queueAllSongsStr,
-                                        items = songSelection.shuffled().map { it.toMediaItem() },
+                                        items = songSelection.map { it.toMediaItem() },
                                     ),
                                     newBoardQueue = true,
+                                    shuffle = true,
                                 )
                                 clearAction()
                                 onDismiss()

@@ -421,7 +421,7 @@ fun CommunityPlaylistCard(
                     onClick = {
                         if (!isListenTogetherGuest) {
                             item.playlist.radioEndpoint?.let {
-                                playerConnection?.playQueue(YouTubeQueue(it))
+                                playerConnection?.playQueue(YouTubeQueue(it, isStartRadio = true))
                             }
                         }
                     },
@@ -1607,8 +1607,7 @@ fun HomeScreen(
                                                                                     }
 
                                                                                     is AlbumItem -> {
-                                                                                        playerConnection.playQueue(YouTubeAlbumRadio(item.playlistId), newBoardQueue = true)
-                                                                                        playerConnection.player.shuffleModeEnabled = true
+                                                                                        playerConnection.playQueue(YouTubeAlbumRadio(item.playlistId), newBoardQueue = true, shuffle = true)
                                                                                     }
 
                                                                                     is PlaylistItem -> {
@@ -1628,23 +1627,25 @@ fun HomeScreen(
                                                                                                     playerConnection.playQueue(
                                                                                                         ListQueue(
                                                                                                             title = item.title,
-                                                                                                            items = songs.shuffled().map { it.song.toMediaItem() },
+                                                                                                            items = songs.map { it.song.toMediaItem() },
                                                                                                         ),
                                                                                                         newBoardQueue = true,
+                                                                                                        shuffle = true,
                                                                                                     )
                                                                                                 }
                                                                                             }
                                                                                         } else if (endpoint != null) {
-                                                                                            playerConnection.playQueue(YouTubeQueue(endpoint), newBoardQueue = true)
-                                                                                            if (item.shuffleEndpoint == null) {
-                                                                                                playerConnection.player.shuffleModeEnabled = true
-                                                                                            }
+                                                                                            playerConnection.playQueue(
+                                                                                                YouTubeQueue(endpoint),
+                                                                                                newBoardQueue = true,
+                                                                                                shuffle = item.shuffleEndpoint == null,
+                                                                                            )
                                                                                         } else {
                                                                                             playerConnection.playQueue(
                                                                                                 YouTubePlaylistQueue(playlistId = item.id, playlistTitle = item.title),
                                                                                                 newBoardQueue = true,
+                                                                                                shuffle = true,
                                                                                             )
-                                                                                            playerConnection.player.shuffleModeEnabled = true
                                                                                         }
                                                                                     }
 

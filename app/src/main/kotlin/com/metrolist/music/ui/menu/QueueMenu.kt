@@ -287,7 +287,7 @@ fun QueueMenu(
                                 playerConnection.startRadioSeamlessly()
                             } else {
                                 playerConnection.playQueue(
-                                    YouTubeQueue.radio(mediaMetadata)
+                                    YouTubeQueue.radio(mediaMetadata, isStartRadio = true)
                                 )
                             }
                         }

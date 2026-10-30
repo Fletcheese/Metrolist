@@ -356,9 +356,10 @@ fun PlaylistMenu(
                                         playerConnection.playQueue(
                                             ListQueue(
                                                 title = playlist.playlist.name,
-                                                items = songs.shuffled().map(Song::toMediaItem),
+                                                items = songs.map(Song::toMediaItem),
                                             ),
                                             newBoardQueue = true,
+                                            shuffle = true,
                                         )
                                     }
                                 },
@@ -417,7 +418,7 @@ fun PlaylistMenu(
                                                 YouTube.playlist(browseId).getOrNull()?.playlist?.let { playlistItem ->
                                                     playlistItem.radioEndpoint?.let { radioEndpoint ->
                                                         withContext(Dispatchers.Main) {
-                                                            playerConnection.playQueue(YouTubeQueue(radioEndpoint))
+                                                            playerConnection.playQueue(YouTubeQueue(radioEndpoint, isStartRadio = true))
                                                         }
                                                     }
                                                 }

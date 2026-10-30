@@ -652,6 +652,7 @@ fun LibraryMixScreen(
                                                                 title = queueSearchedSongsStr,
                                                                 items = filteredSongs.map { it.toMediaItem() },
                                                                 startIndex = filteredSongs.indexOfFirst { it.id == item.id },
+                                                                songOnly = true,
                                                             ),
                                                         )
                                                     }
@@ -960,6 +961,7 @@ fun LibraryMixScreen(
                                                                 title = queueSearchedSongsStr,
                                                                 items = filteredSongs.map { it.toMediaItem() },
                                                                 startIndex = filteredSongs.indexOfFirst { it.id == item.id },
+                                                                songOnly = true,
                                                             ),
                                                         )
                                                     }

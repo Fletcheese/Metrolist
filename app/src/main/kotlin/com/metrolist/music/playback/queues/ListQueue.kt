@@ -19,12 +19,24 @@ class ListQueue(
      * falling back to a title-based key below is a best-effort heuristic, not a guarantee.
      */
     val sourceKey: String? = null,
+    /**
+     * FletchTunes: the user tapped one song in a list that is not an album or playlist (Library
+     * songs, History, local search results, an artist's library songs). Only that song goes
+     * into the queue; the songs after it go to the Autoplay list.
+     */
+    val songOnly: Boolean = false,
 ) : Queue {
     override val preloadItem: MediaMetadata? = null
 
-    override val queueSourceKey: String? = sourceKey ?: title?.let { "list:$it" }
+    override val queueSourceKey: String? =
+        if (songOnly) null else sourceKey ?: title?.let { "list:$it" }
 
-    override suspend fun getInitialStatus() = Queue.Status(title, items, startIndex, position)
+    override suspend fun getInitialStatus() =
+        if (songOnly && startIndex in items.indices) {
+            Queue.Status(title, listOf(items[startIndex]), 0, position, suggestions = items.drop(startIndex + 1))
+        } else {
+            Queue.Status(title, items, startIndex, position)
+        }
 
     override fun hasNextPage(): Boolean = false
 

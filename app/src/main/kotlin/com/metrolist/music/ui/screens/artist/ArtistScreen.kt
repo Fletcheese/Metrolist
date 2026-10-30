@@ -401,7 +401,7 @@ fun ArtistScreen(
                                             artistPage?.artist?.radioEndpoint?.let { radioEndpoint ->
                                                 OutlinedButton(
                                                     onClick = {
-                                                        playerConnection.playQueue(YouTubeQueue(radioEndpoint))
+                                                        playerConnection.playQueue(YouTubeQueue(radioEndpoint, isStartRadio = true))
                                                     },
                                                     shape = RoundedCornerShape(50),
                                                     modifier = Modifier.height(40.dp),
@@ -594,6 +594,7 @@ fun ArtistScreen(
                                                                 title = displayArtistName ?: "Unknown Artist",
                                                                 items = librarySongs.map { it.toMediaItem() },
                                                                 startIndex = index,
+                                                                songOnly = true,
                                                             ),
                                                         )
                                                     }

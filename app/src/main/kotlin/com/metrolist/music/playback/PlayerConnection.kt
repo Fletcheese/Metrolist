@@ -252,7 +252,12 @@ class PlayerConnection(
         _openQueueSheetEvent.tryEmit(Unit)
     }
 
-    fun playQueue(queue: Queue, resumeBoardQueueId: String? = null, newBoardQueue: Boolean = false) {
+    fun playQueue(
+        queue: Queue,
+        resumeBoardQueueId: String? = null,
+        newBoardQueue: Boolean = false,
+        shuffle: Boolean = false,
+    ) {
         // Block if Listen Together guest (unless internal sync)
         if (!allowInternalSync && shouldBlockPlaybackChanges?.invoke() == true) {
             Timber.tag("PlayerConnection").d("playQueue blocked - Listen Together guest")
@@ -262,7 +267,7 @@ class PlayerConnection(
             Timber.tag(TAG).w("playQueue called before player ready; delegating to service")
         }
         try {
-            service.playQueue(queue, resumeBoardQueueId = resumeBoardQueueId, newBoardQueue = newBoardQueue)
+            service.playQueue(queue, resumeBoardQueueId = resumeBoardQueueId, newBoardQueue = newBoardQueue, shuffle = shuffle)
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Error in playQueue")
             throw e

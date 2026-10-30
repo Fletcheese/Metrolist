@@ -1326,9 +1326,10 @@ fun LocalPlaylistHeader(
                     playerConnection.playQueue(
                         ListQueue(
                             title = playlist.playlist.name,
-                            items = songs.shuffled().map { it.song.toMediaItem() },
+                            items = songs.map { it.song.toMediaItem() },
                         ),
                         newBoardQueue = true,
+                        shuffle = true,
                     )
                 },
                 shape = CircleShape,

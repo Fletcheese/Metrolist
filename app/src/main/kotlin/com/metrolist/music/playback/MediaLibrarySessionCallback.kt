@@ -67,6 +67,7 @@ import com.metrolist.music.constants.AndroidAutoSectionsOrderKey
 import com.metrolist.music.constants.AndroidAutoYouTubePlaylistsKey
 import com.metrolist.music.constants.AutoRadioQueueKey
 import com.metrolist.music.playback.queues.ListQueue
+import com.metrolist.music.playback.queues.Queue
 import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.ui.screens.settings.AndroidAutoSection
 import com.metrolist.music.ui.screens.settings.deserializeSections
@@ -655,35 +656,33 @@ constructor(
             } ?: return@future defaultResult
 
             when (path.firstOrNull()) {
+                // FletchTunes: a song picked from the library or an artist's songs is the only
+                // song in the queue; the songs after it go to Autoplay.
                 MusicService.SONG -> {
                     val songId = path.getOrNull(1) ?: return@future defaultResult
-                    val allSongs = database.songsByCreateDateAsc().first()
-                    MediaItemsWithStartPosition(
-                        allSongs.map { it.toMediaItem() },
-                        allSongs.indexOfFirst { it.id == songId }.takeIf { it != -1 } ?: 0,
-                        startPositionMs
-                    )
+                    val allSongs = database.songsByCreateDateAsc().first().map { it.toMediaItem() }
+                    val index = allSongs.indexOfFirst { it.mediaId == songId }.takeIf { it != -1 } ?: 0
+                    songOnlySessionQueue(allSongs, index, startPositionMs) ?: defaultResult
                 }
 
                 MusicService.ARTIST -> {
                     val songId = path.getOrNull(2) ?: return@future defaultResult
                     val artistId = path.getOrNull(1) ?: return@future defaultResult
-                    val songs = database.artistSongsByCreateDateAsc(artistId).first()
-                    MediaItemsWithStartPosition(
-                        songs.map { it.toMediaItem() },
-                        songs.indexOfFirst { it.id == songId }.takeIf { it != -1 } ?: 0,
-                        startPositionMs
-                    )
+                    val songs = database.artistSongsByCreateDateAsc(artistId).first().map { it.toMediaItem() }
+                    val index = songs.indexOfFirst { it.mediaId == songId }.takeIf { it != -1 } ?: 0
+                    songOnlySessionQueue(songs, index, startPositionMs) ?: defaultResult
                 }
 
                 MusicService.ALBUM -> {
                     val songId = path.getOrNull(2) ?: return@future defaultResult
                     val albumId = path.getOrNull(1) ?: return@future defaultResult
                     val albumWithSongs = database.albumWithSongs(albumId).first() ?: return@future defaultResult
-                    MediaItemsWithStartPosition(
-                        albumWithSongs.songs.map { it.toMediaItem() },
+                    val songs = albumWithSongs.songs.map { it.toMediaItem() }
+                    sessionQueue(
+                        ListQueue(title = albumWithSongs.album.title, items = songs, sourceKey = "album:$albumId"),
+                        songs,
                         albumWithSongs.songs.indexOfFirst { it.id == songId }.takeIf { it != -1 } ?: 0,
-                        startPositionMs
+                        startPositionMs,
                     )
                 }
 
@@ -713,18 +712,20 @@ constructor(
                         }
                     }.first()
 
-                    // Check if this is a shuffle action
+                    val items = songs.map { it.toMediaItem() }
+                    val queue = ListQueue(title = null, items = items, sourceKey = "playlist:$playlistId")
+                    // Check if this is a shuffle action (TalkToMe's "play my music" uses it).
+                    // FletchTunes: the songs stay in playlist order and shuffle is turned on with
+                    // one fixed order, starting on a random song.
                     if (songId == MusicService.SHUFFLE_ACTION) {
-                        MediaItemsWithStartPosition(
-                            songs.shuffled().map { it.toMediaItem() },
-                            0,
-                            C.TIME_UNSET
-                        )
+                        if (items.isEmpty()) return@future defaultResult
+                        sessionQueue(queue, items, items.indices.random(), C.TIME_UNSET, shuffle = true)
                     } else {
-                        MediaItemsWithStartPosition(
-                            songs.map { it.toMediaItem() },
+                        sessionQueue(
+                            queue,
+                            items,
                             songs.indexOfFirst { it.id == songId }.takeIf { it != -1 } ?: 0,
-                            startPositionMs
+                            startPositionMs,
                         )
                     }
                 }
@@ -742,18 +743,17 @@ constructor(
                         return@future defaultResult
                     }
 
+                    val queue = ListQueue(title = null, items = songs, sourceKey = "yt_playlist:$playlistId")
                     // Check if this is a shuffle action
                     if (songId == MusicService.SHUFFLE_ACTION) {
-                        MediaItemsWithStartPosition(
-                            songs.shuffled(),
-                            0,
-                            C.TIME_UNSET
-                        )
+                        if (songs.isEmpty()) return@future defaultResult
+                        sessionQueue(queue, songs, songs.indices.random(), C.TIME_UNSET, shuffle = true)
                     } else {
-                        MediaItemsWithStartPosition(
+                        sessionQueue(
+                            queue,
                             songs,
                             songs.indexOfFirst { it.mediaId.endsWith(songId) }.takeIf { it != -1 } ?: 0,
-                            C.TIME_UNSET
+                            C.TIME_UNSET,
                         )
                     }
                 }
@@ -773,10 +773,16 @@ constructor(
                         if (exactLocalPlaylist != null) {
                             val playlistSongs = database.playlistSongs(exactLocalPlaylist.playlist.id).first()
                             if (playlistSongs.isNotEmpty()) {
-                                return@future MediaItemsWithStartPosition(
-                                    playlistSongs.map { it.song.toMediaItem() },
+                                val items = playlistSongs.map { it.song.toMediaItem() }
+                                return@future sessionQueue(
+                                    ListQueue(
+                                        title = exactLocalPlaylist.playlist.name,
+                                        items = items,
+                                        sourceKey = "playlist:${exactLocalPlaylist.playlist.id}",
+                                    ),
+                                    items,
                                     0,
-                                    C.TIME_UNSET
+                                    C.TIME_UNSET,
                                 )
                             }
                         }
@@ -848,37 +854,72 @@ constructor(
                         }.getOrNull()
 
                         if (radioStatus != null && radioStatus.items.isNotEmpty()) {
-                            withContext(Dispatchers.Main) {
-                                service.adoptQueue(radioQueue, radioStatus.title, radioStatus.items.size) //Used to make the radio queue load more songs when near the end
-                            }
-                            return@future MediaItemsWithStartPosition(
+                            // FletchTunes: the queue gets only the song; the radio (and its
+                            // further pages) go to Autoplay.
+                            return@future sessionQueue(
+                                radioQueue,
                                 radioStatus.items,
                                 radioStatus.items.indexOfFirst { it.mediaId == selectedSong.id }.coerceAtLeast(0),
                                 C.TIME_UNSET,
+                                title = radioStatus.title,
+                                suggestions = radioStatus.suggestions,
                             )
                         }
                     }
 
                     val items = listOf(selectedSong?.toMediaItem() ?: return@future defaultResult)
-                    withContext(Dispatchers.Main) {
-                        service.adoptQueue(
-                            ListQueue(
-                                title = selectedSong.song.title,
-                                items = items,
-                            ),
+                    sessionQueue(
+                        ListQueue(
                             title = selectedSong.song.title,
-                        )
-                    }
-                    MediaItemsWithStartPosition(
+                            items = items,
+                        ),
                         items,
                         0,
-                        C.TIME_UNSET
+                        C.TIME_UNSET,
+                        title = selectedSong.song.title,
                     )
                 }
 
                 else -> defaultResult
             }
         }
+
+    /**
+     * FletchTunes: tells MusicService what the session is about to play (so it gets its own
+     * QueueBoard queue, a fixed shuffle order when [shuffle] is set, and [suggestions] in
+     * Autoplay), then returns the songs for the session to set.
+     */
+    private suspend fun sessionQueue(
+        queue: Queue,
+        items: List<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+        shuffle: Boolean = false,
+        title: String? = (queue as? ListQueue)?.title,
+        suggestions: List<MediaItem> = emptyList(),
+    ): MediaSession.MediaItemsWithStartPosition {
+        withContext(Dispatchers.Main) {
+            service.prepareSessionQueue(queue, title, items, shuffle, suggestions)
+        }
+        return MediaSession.MediaItemsWithStartPosition(items, startIndex, startPositionMs)
+    }
+
+    /** One song picked from a list: it alone goes in the queue, the songs after it to Autoplay. */
+    private suspend fun songOnlySessionQueue(
+        songs: List<MediaItem>,
+        index: Int,
+        startPositionMs: Long,
+    ): MediaSession.MediaItemsWithStartPosition? {
+        val song = songs.getOrNull(index) ?: return null
+        val items = listOf(song)
+        return sessionQueue(
+            ListQueue(title = song.mediaMetadata.title?.toString(), items = items),
+            items,
+            0,
+            startPositionMs,
+            suggestions = songs.drop(index + 1),
+        )
+    }
 
     private fun drawableUri(
         @DrawableRes id: Int,

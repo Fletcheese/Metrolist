@@ -542,9 +542,10 @@ private fun CachePlaylistHeader(
                     playerConnection.playQueue(
                         ListQueue(
                             title = "Cache Songs",
-                            items = songs.shuffled().map { it.toMediaItem() },
+                            items = songs.map { it.toMediaItem() },
                         ),
                         newBoardQueue = true,
+                        shuffle = true,
                     )
                 },
                 shape = androidx.compose.foundation.shape.CircleShape,

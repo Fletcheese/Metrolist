@@ -339,9 +339,10 @@ fun SelectionSongMenu(
                                     playerConnection.playQueue(
                                         ListQueue(
                                             title = "Selection",
-                                            items = songSelection.shuffled().map { it.toMediaItem() },
+                                            items = songSelection.map { it.toMediaItem() },
                                         ),
                                         newBoardQueue = true,
+                                        shuffle = true,
                                     )
                                     clearAction()
                                 },
@@ -404,9 +405,10 @@ fun SelectionSongMenu(
                                         playerConnection.playQueue(
                                             ListQueue(
                                                 title = "Selection",
-                                                items = songSelection.shuffled().map { it.toMediaItem() },
+                                                items = songSelection.map { it.toMediaItem() },
                                             ),
                                             newBoardQueue = true,
+                                            shuffle = true,
                                         )
                                         clearAction()
                                     },
@@ -838,9 +840,10 @@ fun SelectionMediaMetadataMenu(
                                         playerConnection.playQueue(
                                             ListQueue(
                                                 title = "Selection",
-                                                items = songSelection.shuffled().map { it.toMediaItem() },
+                                                items = songSelection.map { it.toMediaItem() },
                                             ),
                                             newBoardQueue = true,
+                                            shuffle = true,
                                         )
                                         clearAction()
                                     },

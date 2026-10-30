@@ -1896,13 +1896,16 @@ class MusicService :
         // queue's source. Used by every "shuffle play" entry point, which should start a fresh
         // queue and never reset an existing one's progress.
         newBoardQueue: Boolean = false,
+        // FletchTunes: start with shuffle on. Pass the songs in their real order: the queue keeps
+        // that order (shuffle off returns to it) and a shuffle order is chosen once, here.
+        shuffle: Boolean = false,
     ) {
         if (taskCleared) return
         if (!playerInitialized.value) {
             Timber.tag(TAG).w("playQueue called before player initialization, queuing request")
             scope.launch {
                 playerInitialized.first { it }
-                playQueue(queue, playWhenReady, restoringQueue, resumeBoardQueueId, newBoardQueue)
+                playQueue(queue, playWhenReady, restoringQueue, resumeBoardQueueId, newBoardQueue, shuffle)
             }
             return
         }
@@ -1922,9 +1925,7 @@ class MusicService :
         pendingAutoplayIndex.value = -1
         autoplaySource = null
         if (!restoringQueue) automixItems.value = emptyList()
-        // A song tapped on its own: YouTube answers with that song plus a radio of suggestions.
-        // Only the song goes into the user's queue; the rest go to the Autoplay list.
-        val splitSuggestions = queue is YouTubeQueue && queue.isSongRadio && !restoringQueue
+        pendingSessionQueue = null
 
         currentQueue = queue
         queueTitle = null
@@ -1933,8 +1934,8 @@ class MusicService :
             player.shuffleModeEnabled = false
         }
         if (resumeBoardQueueId != null) {
-            // A saved queue is stored in play order, i.e. already shuffled if it was playing
-            // shuffled. Shuffling it again would lose the user's place in that order.
+            // A saved queue is stored in play order. If it was shuffled, its saved shuffle order
+            // is put back below; it is never reshuffled.
             player.shuffleModeEnabled = false
         }
         originalQueueSize = 0
@@ -1944,7 +1945,7 @@ class MusicService :
             player.playWhenReady = playWhenReady
         }
         scope.launch(SilentHandler) {
-            val fetchedStatus =
+            var initialStatus =
                 withContext(Dispatchers.IO) {
                     queue
                         .getInitialStatus()
@@ -1953,17 +1954,27 @@ class MusicService :
                 }
             if (queue.preloadItem != null && player.playbackState == STATE_IDLE) return@launch
             if (generation != boardQueueGeneration) return@launch
-            var suggestions = emptyList<MediaItem>()
-            val initialStatus =
-                if (splitSuggestions && fetchedStatus.items.isNotEmpty()) {
-                    val keep = (fetchedStatus.mediaItemIndex.coerceAtLeast(0) + 1).coerceAtMost(fetchedStatus.items.size)
-                    val keptIds = fetchedStatus.items.take(keep).mapTo(HashSet()) { it.mediaId }
-                    // Distinct ids: the Queue sheet keys the Autoplay rows by mediaId.
-                    suggestions = fetchedStatus.items.drop(keep).filter { it.mediaId !in keptIds }.distinctBy { it.mediaId }
-                    fetchedStatus.copy(items = fetchedStatus.items.take(keep))
-                } else {
-                    fetchedStatus
+            // A resumed queue that was shuffled: put its songs back in their real order and
+            // restore the exact shuffle order it had (FletchTunes).
+            val savedShuffleOrder =
+                resumeBoardQueueId?.let { id ->
+                    withContext(Dispatchers.IO) {
+                        runCatching { queueBoard.savedShuffleOrder(id, initialStatus.items.size) }.getOrNull()
+                    }
                 }
+            if (generation != boardQueueGeneration) return@launch
+            if (savedShuffleOrder != null) {
+                val inRealOrder = arrayOfNulls<MediaItem>(savedShuffleOrder.size)
+                savedShuffleOrder.forEachIndexed { playPos, realIndex -> inRealOrder[realIndex] = initialStatus.items[playPos] }
+                initialStatus =
+                    initialStatus.copy(
+                        items = inRealOrder.map { it!! },
+                        mediaItemIndex = savedShuffleOrder[initialStatus.mediaItemIndex.coerceIn(0, savedShuffleOrder.size - 1)],
+                    )
+            } else if (shuffle && queue.preloadItem == null && initialStatus.items.isNotEmpty()) {
+                // Start on a random song; the rest of the shuffle order is chosen below.
+                initialStatus = initialStatus.copy(mediaItemIndex = initialStatus.items.indices.random(), position = 0L)
+            }
             if (initialStatus.title != null) {
                 queueTitle = initialStatus.title
             }
@@ -1997,16 +2008,18 @@ class MusicService :
                 player.playWhenReady = playWhenReady
             }
 
-            if (player.shuffleModeEnabled) {
-                val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
-                applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
+            when {
+                savedShuffleOrder != null -> enableShuffleWithOrder(savedShuffleOrder)
+                shuffle -> enableShuffleWithOrder(null)
+                player.shuffleModeEnabled -> {
+                    val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
+                    applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
+                }
             }
 
-            if (splitSuggestions) {
-                autoplaySource = queue
-                automixItems.value = suggestions
-                maybePromoteAutoplay()
-            }
+            // Radio, related and automix songs that came with the source go to Autoplay, never
+            // into the queue (FletchTunes).
+            if (!restoringQueue) adoptSuggestions(queue, initialStatus.suggestions)
 
             // Parallel queues: starting (or restarting) a source creates/reuses its own queue
             // rather than silently replacing whatever board entry was active before, per
@@ -2063,6 +2076,145 @@ class MusicService :
         currentQueue = queue
         queueTitle = title
         originalQueueSize = initialQueueSize
+    }
+
+    /**
+     * Puts a source's suggestions in the Autoplay list and, when the source's further pages are
+     * suggestions too, lets maybeLoadMoreAutoplay() page through it. Must run on the main thread.
+     */
+    private fun adoptSuggestions(queue: Queue, suggestions: List<MediaItem>) {
+        if (queue.nextPagesAreSuggestions()) autoplaySource = queue
+        if (suggestions.isNotEmpty()) {
+            val inPlayer = (0 until player.mediaItemCount).mapTo(HashSet()) { player.getMediaItemAt(it).mediaId }
+            // Distinct ids: the Queue sheet keys the Autoplay rows by mediaId.
+            automixItems.value =
+                (suggestions + automixItems.value).filter { it.mediaId !in inPlayer }.distinctBy { it.mediaId }
+        }
+        maybePromoteAutoplay()
+    }
+
+    // Set while shuffle is being switched on with an order chosen by the caller, so
+    // onShuffleModeEnabledChanged() does not replace that order with a fresh random one.
+    private var skipNextShuffleReorder = false
+
+    /**
+     * Turns shuffle on with [order] (media item indices in play order), or with a fresh random
+     * order that starts at the current song when [order] is null. The songs keep their real
+     * order, so turning shuffle off returns to it. Must run on the main thread.
+     */
+    private fun enableShuffleWithOrder(order: IntArray?) {
+        if (player.mediaItemCount == 0) return
+        if (!player.shuffleModeEnabled) {
+            skipNextShuffleReorder = true
+            player.shuffleModeEnabled = true
+        }
+        if (order != null && order.size == player.mediaItemCount) {
+            player.setShuffleOrder(DefaultShuffleOrder(order, System.currentTimeMillis()))
+        } else {
+            applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst = false)
+        }
+    }
+
+    /**
+     * After songs were appended at [firstNewIndex], keeps the existing shuffle order exactly as
+     * it was and adds the new songs, shuffled among themselves, at the end of it. Used for
+     * "Add to queue" and for the next page of a playlist, which must never reshuffle what is
+     * already there (FletchTunes). Must run on the main thread.
+     */
+    private fun appendToShuffleOrder(firstNewIndex: Int) {
+        if (!player.shuffleModeEnabled) return
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return
+        val count = timeline.windowCount
+        if (firstNewIndex !in 0 until count) return
+        val order = ArrayList<Int>(count)
+        var index = timeline.getFirstWindowIndex(true)
+        while (index != C.INDEX_UNSET && order.size < count) {
+            if (index < firstNewIndex) order += index
+            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, true)
+        }
+        order += (firstNewIndex until count).shuffled()
+        if (order.size != count) return
+        player.setShuffleOrder(DefaultShuffleOrder(order.toIntArray(), System.currentTimeMillis()))
+    }
+
+    /**
+     * A queue that Android Auto or a voice/TalkToMe "play from search" is about to set through
+     * the media session, which bypasses playQueue(). Consumed by onEvents() once the player
+     * holds those songs.
+     */
+    private class SessionQueueRequest(
+        val queue: Queue,
+        val title: String?,
+        val firstMediaId: String?,
+        val size: Int,
+        val shuffle: Boolean,
+        val suggestions: List<MediaItem>,
+        val generation: Int,
+    )
+
+    private var pendingSessionQueue: SessionQueueRequest? = null
+
+    /**
+     * Called by MediaLibrarySessionCallback.onSetMediaItems() just before the session replaces
+     * the player's songs with [items] (in their real order). Does what playQueue() does around
+     * that: detaches the outgoing QueueBoard row so it is not overwritten, drops the old
+     * suggestions, and once the songs are in, starts a QueueBoard row, turns shuffle on with
+     * one fixed order when [shuffle] is set, and puts [suggestions] in Autoplay.
+     */
+    fun prepareSessionQueue(
+        queue: Queue,
+        title: String?,
+        items: List<MediaItem>,
+        shuffle: Boolean = false,
+        suggestions: List<MediaItem> = emptyList(),
+    ) {
+        recordActiveQueuePlayback()
+        activeQueueBoardId = null
+        val generation = ++boardQueueGeneration
+        pendingAutoplayItem = null
+        pendingAutoplayIndex.value = -1
+        autoplaySource = null
+        automixItems.value = emptyList()
+        currentQueue = queue
+        queueTitle = title
+        originalQueueSize = items.size
+        if (!dataStore.get(PersistentShuffleAcrossQueuesKey, false)) player.shuffleModeEnabled = false
+        pendingSessionQueue =
+            SessionQueueRequest(queue, title, items.firstOrNull()?.mediaId, items.size, shuffle, suggestions, generation)
+    }
+
+    private fun consumeSessionQueue() {
+        val request = pendingSessionQueue ?: return
+        if (request.generation != boardQueueGeneration) {
+            pendingSessionQueue = null
+            return
+        }
+        if (player.mediaItemCount != request.size || player.getMediaItemAt(0).mediaId != request.firstMediaId) return
+        pendingSessionQueue = null
+        if (request.shuffle) enableShuffleWithOrder(null)
+        adoptSuggestions(request.queue, request.suggestions)
+        val items = (0 until player.mediaItemCount).mapNotNull { player.getMediaItemAt(it).metadata }
+        if (items.isEmpty()) return
+        val startIndex = player.currentMediaItemIndex
+        val shuffled = player.shuffleModeEnabled
+        applicationScope.launch(Dispatchers.IO) {
+            runCatching {
+                queueBoard.startQueue(
+                    sourceKey = if (request.shuffle) null else request.queue.queueSourceKey,
+                    title = request.title ?: "Queue",
+                    items = items,
+                    startIndex = startIndex,
+                    shuffled = shuffled,
+                )
+            }.onSuccess { id ->
+                withContext(Dispatchers.Main) {
+                    if (request.generation != boardQueueGeneration) return@withContext
+                    activeQueueBoardId = id
+                    syncActiveQueueToBoard()
+                }
+            }.onFailure { Timber.tag(TAG).e(it, "Failed to record session queue in QueueBoard") }
+        }
     }
 
     fun startRadioSeamlessly() {
@@ -2471,11 +2623,10 @@ class MusicService :
             }
         }
 
+        val firstNewIndex = player.mediaItemCount
         player.addMediaItems(items)
-        if (player.shuffleModeEnabled) {
-            val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
-            applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
-        }
+        // Added songs go to the end of the shuffle order; what is already there keeps its order.
+        appendToShuffleOrder(firstNewIndex)
         player.prepare()
     }
 
@@ -2918,26 +3069,34 @@ class MusicService :
         // A single-song radio's continuation feeds the Autoplay list (maybeLoadMoreAutoplay()),
         // never the user's queue.
         if (cachedAutoLoadMore &&
-            currentQueue !== autoplaySource &&
+            !currentQueue.nextPagesAreSuggestions() &&
             reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
             player.mediaItemCount - player.currentMediaItemIndex <= 5 &&
             currentQueue.hasNextPage() &&
             !(cachedDisableLoadMoreWhenRepeatAll && player.repeatMode == REPEAT_MODE_ALL)
         ) {
+            val source = currentQueue
             scope.launch(SilentHandler) {
-                val mediaItems =
+                val page =
                     withContext(Dispatchers.IO) {
-                        currentQueue
-                            .nextPage()
-                            .filterExplicit(cachedHideExplicit)
-                            .filterVideoSongs(cachedHideVideoSongs)
+                        source.nextPageWithSuggestions().let { page ->
+                            Queue.Page(
+                                page.items.filterExplicit(cachedHideExplicit).filterVideoSongs(cachedHideVideoSongs),
+                                page.suggestions.filterExplicit(cachedHideExplicit).filterVideoSongs(cachedHideVideoSongs),
+                            )
+                        }
                     }
-                if (player.playbackState != STATE_IDLE && mediaItems.isNotEmpty()) {
-                    player.addMediaItems(mediaItems)
-                    if (player.shuffleModeEnabled) {
-                        applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, cachedShufflePlaylistFirst)
-                    }
+                if (currentQueue !== source || player.playbackState == STATE_IDLE) return@launch
+                if (page.items.isNotEmpty()) {
+                    // More of the same playlist: ahead of any Autoplay suggestion, and added to
+                    // the end of the shuffle order without reshuffling what is there (FletchTunes).
+                    demotePendingAutoplay()
+                    val firstNewIndex = player.mediaItemCount
+                    player.addMediaItems(page.items)
+                    appendToShuffleOrder(firstNewIndex)
                 }
+                // The playlist ran into YouTube's automix: that goes to Autoplay, as do its pages.
+                adoptSuggestions(source, page.suggestions)
             }
         }
 
@@ -2965,7 +3124,8 @@ class MusicService :
             val repeatMode = player.repeatMode
 
             if (player.playWhenReady && repeatMode == REPEAT_MODE_ALL && player.mediaItemCount > 0) {
-                player.seekTo(0, 0)
+                // The first song in play order, so a shuffled queue repeats in the same order.
+                player.seekTo(player.currentTimeline.getFirstWindowIndex(player.shuffleModeEnabled).coerceAtLeast(0), 0)
                 player.prepare()
                 player.play()
                 return
@@ -3119,6 +3279,7 @@ class MusicService :
                 Player.EVENT_REPEAT_MODE_CHANGED,
             )
         ) {
+            if (events.contains(EVENT_TIMELINE_CHANGED)) consumeSessionQueue()
             // Keep one Autoplay suggestion queued behind the user's last song (FletchTunes).
             maybePromoteAutoplay()
             refreshPendingAutoplayIndex()
@@ -3169,9 +3330,16 @@ class MusicService :
 
     override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
         updateNotification()
-        if (shuffleModeEnabled) {
-            if (player.mediaItemCount == 0) return
-
+        // enableShuffleWithOrder() turned shuffle on and sets the order itself.
+        val orderChosenByCaller = shuffleModeEnabled && skipNextShuffleReorder
+        skipNextShuffleReorder = false
+        if (!orderChosenByCaller) {
+            // Shuffle reorders the user's queue only: the waiting Autoplay suggestion goes back
+            // to the Autoplay list first, and onEvents() brings it back behind whatever is now
+            // the last song (FletchTunes).
+            demotePendingAutoplay()
+        }
+        if (shuffleModeEnabled && !orderChosenByCaller && player.mediaItemCount > 0) {
             val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
             val currentIndex = player.currentMediaItemIndex
             val totalCount = player.mediaItemCount
@@ -4447,9 +4615,19 @@ class MusicService :
         if (items.isEmpty() || items.size != order.size) return
         val index = order.indexOf(player.currentMediaItemIndex).coerceAtLeast(0)
         val positionMs = player.currentPosition.coerceAtLeast(0L)
+        // For a shuffled queue, also each song's place in the real order, so resuming it later
+        // keeps both the real order and this exact shuffle order (FletchTunes).
+        val shuffled = player.shuffleModeEnabled
+        val realPositions =
+            if (shuffled) {
+                val rank = order.sorted().withIndex().associate { (rank, mediaIndex) -> mediaIndex to rank }
+                order.map { rank.getValue(it) }
+            } else {
+                null
+            }
         applicationScope.launch(Dispatchers.IO) {
             runCatching {
-                queueBoard.recordQueueEdit(id, items, index, positionMs)
+                queueBoard.recordQueueEdit(id, items, index, positionMs, shuffled, realPositions)
             }.onFailure { Timber.tag(TAG).e(it, "Failed to sync queue edit to QueueBoard") }
         }
     }

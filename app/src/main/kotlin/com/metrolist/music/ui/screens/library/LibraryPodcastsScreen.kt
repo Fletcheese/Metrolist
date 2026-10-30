@@ -471,9 +471,10 @@ fun LibraryPodcastsScreen(
                         playerConnection.playQueue(
                             ListQueue(
                                 title = downloadedEpisodesStr,
-                                items = downloadedEpisodes.shuffled().map { it.toMediaItem() },
+                                items = downloadedEpisodes.map { it.toMediaItem() },
                             ),
                             newBoardQueue = true,
+                            shuffle = true,
                         )
                     },
                 )

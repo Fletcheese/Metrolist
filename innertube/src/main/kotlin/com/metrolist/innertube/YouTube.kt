@@ -2945,6 +2945,7 @@ object YouTube {
                         result.copy(
                             title = title,
                             items = songs + result.items,
+                            automixStartIndex = songs.size,
                             lyricsEndpoint =
                                 response.contents.singleColumnMusicWatchNextResultsRenderer
                                     ?.tabbedRenderer

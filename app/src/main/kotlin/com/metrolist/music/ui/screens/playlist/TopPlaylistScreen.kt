@@ -605,9 +605,10 @@ private fun TopPlaylistHeader(
                     playerConnection.playQueue(
                         ListQueue(
                             title = name,
-                            items = songs.shuffled().map { it.toMediaItem() },
+                            items = songs.map { it.toMediaItem() },
                         ),
                         newBoardQueue = true,
+                        shuffle = true,
                     )
                 },
                 shape = androidx.compose.foundation.shape.CircleShape,

@@ -389,7 +389,7 @@ fun YouTubeSongMenu(
                                 )
                             },
                             onClick = {
-                                playerConnection.playQueue(YouTubeQueue.radio(song.toMediaMetadata()))
+                                playerConnection.playQueue(YouTubeQueue.radio(song.toMediaMetadata(), isStartRadio = true))
                                 onDismiss()
                             }
                         )

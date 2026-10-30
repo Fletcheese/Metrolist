@@ -164,6 +164,7 @@ fun ArtistSongsScreen(
                                                 title = queueAllSongsStr,
                                                 items = songs.map { it.toMediaItem() },
                                                 startIndex = index,
+                                                songOnly = true,
                                             ),
                                         )
                                     }
@@ -204,9 +205,10 @@ fun ArtistSongsScreen(
                 playerConnection.playQueue(
                     ListQueue(
                         title = artist?.artist?.name,
-                        items = songs.shuffled().map { it.toMediaItem() },
+                        items = songs.map { it.toMediaItem() },
                     ),
                     newBoardQueue = true,
+                    shuffle = true,
                 )
             },
         )

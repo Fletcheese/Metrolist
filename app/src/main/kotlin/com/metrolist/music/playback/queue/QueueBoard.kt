@@ -20,7 +20,10 @@
 
 package com.metrolist.music.playback.queue
 
+import android.content.Context
 import com.metrolist.music.db.DatabaseDao
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import com.metrolist.music.db.daos.QueueDao
 import com.metrolist.music.db.entities.QueueEntity
 import com.metrolist.music.db.entities.QueueSongMapEntity
@@ -45,6 +48,7 @@ class QueueBoard @Inject constructor(
     private val queueDao: QueueDao,
     private val databaseDao: DatabaseDao,
     @ApplicationScope private val scope: CoroutineScope,
+    @ApplicationContext private val context: Context,
 ) {
     private val mutex = Mutex()
 
@@ -110,11 +114,32 @@ class QueueBoard @Inject constructor(
         items: List<MediaMetadata>,
         currentIndex: Int? = null,
         positionMs: Long? = null,
+        // FletchTunes: whether the queue plays shuffled, and for each song (in play order) its
+        // place in the queue's real order. Null leaves both as they were.
+        shuffled: Boolean? = null,
+        realPositions: List<Int>? = null,
     ) =
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 ensureSongsExist(items)
                 queueDao.replaceSongMaps(id, items.toSongMaps(id))
+                if (shuffled != null) {
+                    queueDao.updateShuffled(id, shuffled)
+                    val file = shuffleOrderFile(id)
+                    if (shuffled && realPositions != null && realPositions.size == items.size) {
+                        runCatching {
+                            file.parentFile?.mkdirs()
+                            val tmp = File(file.path + ".tmp")
+                            tmp.writeText(realPositions.joinToString(","))
+                            if (!tmp.renameTo(file)) {
+                                file.delete()
+                                tmp.renameTo(file)
+                            }
+                        }
+                    } else {
+                        file.delete()
+                    }
+                }
                 if (currentIndex != null) {
                     queueDao.updatePlaybackState(
                         id = id,
@@ -150,7 +175,29 @@ class QueueBoard @Inject constructor(
         _activeQueueId.value = id
     }
 
+    /**
+     * For a queue saved while shuffled: for each song in its saved (play) order, that song's place
+     * in the queue's real order. Null when the queue was not shuffled, or the saved order does not
+     * fit its [size] songs, in which case the queue resumes in its saved play order, unshuffled.
+     *
+     * Kept in a small file per queue rather than a new column, so the Room schema is unchanged.
+     */
+    suspend fun savedShuffleOrder(id: String, size: Int): IntArray? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            if (queueDao.getQueueOnce(id)?.shuffled != true) return@withLock null
+            val order =
+                runCatching {
+                    shuffleOrderFile(id).readText().split(',').map { it.trim().toInt() }.toIntArray()
+                }.getOrNull() ?: return@withLock null
+            val isPermutation = order.size == size && order.sorted() == (0 until size).toList()
+            order.takeIf { isPermutation }
+        }
+    }
+
+    private fun shuffleOrderFile(id: String) = File(File(context.filesDir, "queue_shuffle_orders"), id)
+
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
+        shuffleOrderFile(id).delete()
         queueDao.deleteQueue(id)
         if (_activeQueueId.value == id) _activeQueueId.value = null
     }

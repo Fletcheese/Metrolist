@@ -37,6 +37,9 @@ class YouTubeAlbumRadio(
         )
     }
 
+    // FletchTunes: past the album these pages are its radio, so they go to Autoplay.
+    override fun nextPagesAreSuggestions(): Boolean = true
+
     override fun hasNextPage(): Boolean = !firstTimeLoaded || continuation != null
 
     override suspend fun nextPage(): List<MediaItem> = withContext(IO) {

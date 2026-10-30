@@ -101,7 +101,7 @@ fun YouTubeArtistMenu(
                                     },
                                     text = stringResource(R.string.start_radio),
                                     onClick = {
-                                        playerConnection.playQueue(YouTubeQueue(watchEndpoint))
+                                        playerConnection.playQueue(YouTubeQueue(watchEndpoint, isStartRadio = true))
                                         onDismiss()
                                     }
                                 )

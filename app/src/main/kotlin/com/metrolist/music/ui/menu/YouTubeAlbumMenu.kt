@@ -309,7 +309,7 @@ fun YouTubeAlbumMenu(
                                     onDismiss()
                                     album?.songs?.let { songs ->
                                         if (songs.isNotEmpty()) {
-                                            playerConnection.playQueue(YouTubeAlbumRadio(albumItem.playlistId))
+                                            playerConnection.playQueue(YouTubeAlbumRadio(albumItem.playlistId), newBoardQueue = true, shuffle = true)
                                         }
                                     }
                                 },

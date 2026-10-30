@@ -139,7 +139,6 @@ fun ArtistMenu(
                                                     .artistSongs(artist.id, ArtistSongSortType.CREATE_DATE, true)
                                                     .first()
                                                     .map { it.toMediaItem() }
-                                                    .shuffled()
                                             }
                                             playerConnection.playQueue(
                                                 ListQueue(
@@ -147,6 +146,7 @@ fun ArtistMenu(
                                                     items = songs,
                                                 ),
                                                 newBoardQueue = true,
+                                                shuffle = true,
                                             )
                                         }
                                         onDismiss()

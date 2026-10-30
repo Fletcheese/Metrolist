@@ -469,6 +469,7 @@ fun LibrarySongsScreen(
                                             title = queueAllSongsStr,
                                             items = filteredSongs.map { it.toMediaItem() },
                                             startIndex = index,
+                                            songOnly = true,
                                         ),
                                     )
                                 }
@@ -498,9 +499,10 @@ fun LibrarySongsScreen(
                     playerConnection.playQueue(
                         ListQueue(
                             title = queueAllSongsStr,
-                            items = filteredSongs.shuffled().map { it.toMediaItem() },
+                            items = filteredSongs.map { it.toMediaItem() },
                         ),
                         newBoardQueue = true,
+                        shuffle = true,
                     )
                 }
             },

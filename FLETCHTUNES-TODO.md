@@ -15,6 +15,25 @@ The bug: tapping one song filled the queue with ~50 YouTube radio suggestions, s
 9. Queues tab: the queue for the tapped song lists only the songs you chose (plus any suggestions that actually played), not the waiting suggestions.
 10. Optional: with suggestions showing, close the app from recents and reopen. Expected: the queue and the Autoplay list both come back.
 
+Second pass, the rule "if I started an album/song, the queue should ONLY contain that album/song", extended to playlists and shuffle. "Start radio" is deliberately unchanged: it still fills the queue with the radio.
+
+11. Library › Songs: tap a song. Expected: the queue holds only that song, and the library songs after it are listed under Autoplay. Same for a History row, a local search result, and a song in an artist's library songs.
+12. Open an album (local, then a YouTube one) and press Play. Expected: the queue holds exactly the album's songs. Its radio is listed under Autoplay, not in the queue. Repeat by tapping a song in the middle of the album: same songs, starting at that one.
+13. Open a playlist (online, local, and Liked) and press Play, then tap a song inside one. Expected: the queue holds the playlist only. For a long online playlist, scroll the queue near the end and let it load more: the new songs are the playlist's, and any YouTube "mix" after it shows under Autoplay.
+14. Speed dial: tap a song tile, then a playlist tile's shuffle icon. Expected: the song alone; then the playlist alone, shuffled.
+15. TalkToMe "play my music" (Songs I like, shuffled). Expected: only that playlist's songs, shuffled, starting on a random song, and shuffle shows on. The previous queue in the Queues tab is untouched, and a new queue appears for this one.
+16. Android Auto, if handy: pick a song from the library, then a playlist. Expected: the song alone (rest under Autoplay); then the whole playlist.
+17. Song menu › Start radio. Expected: unchanged, the queue fills with the radio.
+
+Shuffle:
+
+18. Play a playlist in order, then turn shuffle on. Expected: the same songs, reordered, and no Autoplay suggestion mixed in. Turn shuffle off. Expected: back to the playlist's own order.
+19. Press Shuffle on a playlist. Expected: starts on a random song, shuffle shows on. Note the next 5 songs in the queue sheet.
+20. "Add to queue" a song. Expected: the 5 noted songs stay in the same order; the added song goes after them, at the end of the shuffled queue.
+21. Switch to another queue in the Queues tab, then back. Expected: same shuffled order, same song and position, shuffle still on.
+22. Close the app from recents and reopen. Expected: same shuffled order, shuffle on. Turn shuffle off: the playlist's own order. Turn it on again: a new order (the only time it changes).
+23. Turn on repeat all on a short shuffled playlist and let it loop. Expected: the second time round plays in the same shuffled order.
+
 ## 0. Retest the four queue-bug fixes (branch `claude/fletchtunes-queue-bugs-04546c`)
 
 Fixed and pushed from Windows on 2026-10-26, after each bug was reproduced on the 6T: `faf55e2` (a new queue overwrote the active one), `834d1f4` (speed-dial shuffle did nothing on pinned playlists), `5919685` ("Song N of M" on each queue), `0200e61` (resume mid-song). The branch is based on the queues branch (`cc65d811`), not `main`; merging is Fletcher's call.
