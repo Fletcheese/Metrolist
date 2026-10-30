@@ -657,6 +657,11 @@ fun Queue(
         val queueTitle by playerConnection.queueTitle.collectAsStateWithLifecycle()
         val queueWindows by playerConnection.queueWindows.collectAsStateWithLifecycle()
         val automix by playerConnection.service.automixItems.collectAsStateWithLifecycle()
+        val pendingAutoplayIndex by playerConnection.service.pendingAutoplayIndex.collectAsStateWithLifecycle()
+        val pendingAutoplayWindow =
+            remember(queueWindows, pendingAutoplayIndex) {
+                queueWindows.firstOrNull { it.firstPeriodIndex == pendingAutoplayIndex }
+            }
         val mutableQueueWindows = remember { mutableStateListOf<Timeline.Window>() }
         val queueLength =
             remember(queueWindows) {
@@ -773,6 +778,9 @@ fun Queue(
                     items = mutableQueueWindows,
                     key = { _, item -> item.uid.hashCode() },
                 ) { index, window ->
+                    // The waiting Autoplay suggestion is in the player but not in the user's queue;
+                    // it is listed in the Autoplay section below instead.
+                    if (window.firstPeriodIndex == pendingAutoplayIndex) return@itemsIndexed
                     ReorderableItem(
                         state = reorderableState,
                         key = window.uid.hashCode(),
@@ -943,7 +951,7 @@ fun Queue(
                     }
                 }
 
-                if (automix.isNotEmpty()) {
+                if (automix.isNotEmpty() || pendingAutoplayWindow != null) {
                     item(key = "automix_divider") {
                         HorizontalDivider(
                             modifier =
@@ -952,10 +960,22 @@ fun Queue(
                                     .animateItem(),
                         )
 
+                        // FletchTunes: suggestions, kept out of the user's queue. They play once
+                        // the queue above runs out (if "Enable similar content" is on).
                         Text(
-                            text = stringResource(R.string.similar_content),
+                            text = stringResource(R.string.autoplay),
                             modifier = Modifier.padding(start = 16.dp),
                         )
+                    }
+
+                    // The next suggestion, already loaded in the player so it plays without a gap.
+                    pendingAutoplayWindow?.mediaItem?.metadata?.let { pendingMetadata ->
+                        item(key = "autoplay_pending") {
+                            MediaMetadataListItem(
+                                mediaMetadata = pendingMetadata,
+                                modifier = Modifier.fillMaxWidth().animateItem(),
+                            )
+                        }
                     }
 
                     itemsIndexed(

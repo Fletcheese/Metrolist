@@ -1,5 +1,20 @@
 # FletchTunes to-do (pick up on the Linux box)
 
+## 00. Retest the Autoplay section (branch `claude/fletchtunes-autoplay-section`)
+
+The bug: tapping one song filled the queue with ~50 YouTube radio suggestions, so anything added with "Add to queue" played after all of them. Now a tapped song goes into the queue on its own, and its radio suggestions sit in a separate "Autoplay" section below the queue. They play only once the queue runs out, and only while Settings › Player › "Enable similar content" is on. The branch is based on `claude/fletchtunes-queue-bugs-04546c`, so it includes the four queue-bug fixes in item 0. Written and compile-checked on Windows; not yet tried on the phone.
+
+1. `git fetch && git checkout claude/fletchtunes-autoplay-section`, then `JAVA_HOME=/home/fletch/.jdks/jbr-21.0.11 ANDROID_HOME=/home/fletch/Android/Sdk ./gradlew :app:installFossDebug` (no uninstall, so the data stays).
+2. Check Settings › Player: "Auto radio queue" and "Enable similar content" are both on (the defaults).
+3. From Search or Home, tap one song to play it. Open the queue sheet. Expected: the queue holds just that song, and an "Autoplay" heading below it lists the suggestions. Before the fix, the suggestions were queue rows.
+4. Long-press two other songs and choose "Add to queue" on each. Expected: both appear in the queue, above the Autoplay heading.
+5. Skip to the end of the first song. Expected: the two queued songs play next, in order, before any suggestion.
+6. Let the second queued song finish (or skip it). Expected: playback carries on into the first Autoplay suggestion without stopping, and it leaves the Autoplay list. The skip-next button stays enabled on the last queued song.
+7. While a suggestion is playing, "Add to queue" another song. Expected: it plays next, ahead of the remaining suggestions.
+8. Turn "Enable similar content" off, play one song with nothing queued. Expected: the Autoplay section still lists suggestions, but playback stops when the song ends.
+9. Queues tab: the queue for the tapped song lists only the songs you chose (plus any suggestions that actually played), not the waiting suggestions.
+10. Optional: with suggestions showing, close the app from recents and reopen. Expected: the queue and the Autoplay list both come back.
+
 ## 0. Retest the four queue-bug fixes (branch `claude/fletchtunes-queue-bugs-04546c`)
 
 Fixed and pushed from Windows on 2026-10-26, after each bug was reproduced on the 6T: `faf55e2` (a new queue overwrote the active one), `834d1f4` (speed-dial shuffle did nothing on pinned playlists), `5919685` ("Song N of M" on each queue), `0200e61` (resume mid-song). The branch is based on the queues branch (`cc65d811`), not `main`; merging is Fletcher's call.

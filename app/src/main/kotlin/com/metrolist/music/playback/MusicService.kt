@@ -488,7 +488,31 @@ class MusicService :
 
     private var scrobbleManager: ScrobbleManager? = null
 
+    /**
+     * The Autoplay list: suggested songs that are NOT in the user's queue. Shown below the queue
+     * in the Queue sheet. When the user queue has nothing left to play, maybePromoteAutoplay()
+     * moves the first one into the player just behind the current song, so playback continues
+     * gaplessly (and the skip-next button works).
+     */
     val automixItems = MutableStateFlow<List<MediaItem>>(emptyList())
+
+    /**
+     * The one Autoplay suggestion currently sitting in the player behind the last user-queued
+     * song, waiting to play. It is not part of the user's queue: addToQueue() puts it back in
+     * the Autoplay list before appending, QueueBoard and the queue file leave it out, and the
+     * Queue sheet shows it in the Autoplay section. Null once it starts playing.
+     */
+    private var pendingAutoplayItem: MediaItem? = null
+
+    /** Player index of [pendingAutoplayItem], or -1. Read by the Queue sheet. */
+    val pendingAutoplayIndex = MutableStateFlow(-1)
+
+    // The queue whose continuation pages feed the Autoplay list (a single-song radio).
+    private var autoplaySource: Queue? = null
+    private var autoplayLoadingMore = false
+
+    @Volatile
+    private var cachedSimilarContent = true
 
     // Tracks the original queue size to distinguish original items from auto-added ones
     private var originalQueueSize: Int = 0
@@ -1199,6 +1223,9 @@ class MusicService :
         scope.launch {
             dataStore.data.map { it[AutoLoadMoreKey] ?: true }.distinctUntilChanged().collect { cachedAutoLoadMore = it }
         }
+        scope.launch {
+            dataStore.data.map { it[SimilarContent] ?: true }.distinctUntilChanged().collect { cachedSimilarContent = it }
+        }
         if (startupPrefs!![PersistentQueueKey] ?: true) {
             // Parallel queues: before falling back to the legacy single-queue file, check
             // whether a QueueBoard (Room) queue is already the most-recently-played one - if
@@ -1889,6 +1916,16 @@ class MusicService :
         activeQueueBoardId = null
         val generation = ++boardQueueGeneration
 
+        // Suggestions belong to the queue being replaced. A cold-start restore keeps the
+        // Autoplay list that onCreate() read back from persistent_automix.data.
+        pendingAutoplayItem = null
+        pendingAutoplayIndex.value = -1
+        autoplaySource = null
+        if (!restoringQueue) automixItems.value = emptyList()
+        // A song tapped on its own: YouTube answers with that song plus a radio of suggestions.
+        // Only the song goes into the user's queue; the rest go to the Autoplay list.
+        val splitSuggestions = queue is YouTubeQueue && queue.isSongRadio && !restoringQueue
+
         currentQueue = queue
         queueTitle = null
         val persistShuffleAcrossQueues = dataStore.get(PersistentShuffleAcrossQueuesKey, false)
@@ -1907,7 +1944,7 @@ class MusicService :
             player.playWhenReady = playWhenReady
         }
         scope.launch(SilentHandler) {
-            val initialStatus =
+            val fetchedStatus =
                 withContext(Dispatchers.IO) {
                     queue
                         .getInitialStatus()
@@ -1915,6 +1952,18 @@ class MusicService :
                         .filterVideoSongs(dataStore.get(HideVideoSongsKey, false))
                 }
             if (queue.preloadItem != null && player.playbackState == STATE_IDLE) return@launch
+            if (generation != boardQueueGeneration) return@launch
+            var suggestions = emptyList<MediaItem>()
+            val initialStatus =
+                if (splitSuggestions && fetchedStatus.items.isNotEmpty()) {
+                    val keep = (fetchedStatus.mediaItemIndex.coerceAtLeast(0) + 1).coerceAtMost(fetchedStatus.items.size)
+                    val keptIds = fetchedStatus.items.take(keep).mapTo(HashSet()) { it.mediaId }
+                    // Distinct ids: the Queue sheet keys the Autoplay rows by mediaId.
+                    suggestions = fetchedStatus.items.drop(keep).filter { it.mediaId !in keptIds }.distinctBy { it.mediaId }
+                    fetchedStatus.copy(items = fetchedStatus.items.take(keep))
+                } else {
+                    fetchedStatus
+                }
             if (initialStatus.title != null) {
                 queueTitle = initialStatus.title
             }
@@ -1951,6 +2000,12 @@ class MusicService :
             if (player.shuffleModeEnabled) {
                 val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
                 applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
+            }
+
+            if (splitSuggestions) {
+                autoplaySource = queue
+                automixItems.value = suggestions
+                maybePromoteAutoplay()
             }
 
             // Parallel queues: starting (or restarting) a source creates/reuses its own queue
@@ -2195,6 +2250,104 @@ class MusicService :
 
     fun clearAutomix() {
         automixItems.value = emptyList()
+        pendingAutoplayItem = null
+        pendingAutoplayIndex.value = -1
+        autoplaySource = null
+    }
+
+    /**
+     * Finds [pendingAutoplayItem] in the player: the song right after the current one in play
+     * order if it matches, otherwise the first copy of it after the current index. Clears it if
+     * it is gone (the queue was replaced or edited). Must run on the main thread.
+     */
+    private fun refreshPendingAutoplayIndex(): Int {
+        val pending = pendingAutoplayItem
+        var found = -1
+        if (pending != null && player.mediaItemCount > 0) {
+            val current = player.currentMediaItemIndex
+            val next = player.nextMediaItemIndex
+            found =
+                if (next != C.INDEX_UNSET && next != current && player.getMediaItemAt(next).mediaId == pending.mediaId) {
+                    next
+                } else {
+                    (current + 1 until player.mediaItemCount).firstOrNull {
+                        player.getMediaItemAt(it).mediaId == pending.mediaId
+                    } ?: -1
+                }
+            if (found == -1) pendingAutoplayItem = null
+        }
+        pendingAutoplayIndex.value = found
+        return found
+    }
+
+    /**
+     * Puts the waiting suggestion back at the top of the Autoplay list, so whatever the user
+     * adds next goes ahead of it. maybePromoteAutoplay() brings it back once the user queue
+     * runs out again.
+     */
+    private fun demotePendingAutoplay() {
+        val pending = pendingAutoplayItem ?: return
+        val index = refreshPendingAutoplayIndex()
+        pendingAutoplayItem = null
+        pendingAutoplayIndex.value = -1
+        if (index < 0) return
+        player.removeMediaItem(index)
+        automixItems.value = listOf(pending) + automixItems.value
+    }
+
+    /**
+     * When the user queue has nothing left after the current song, moves the first Autoplay
+     * suggestion into the player right behind it, so it plays next without a gap. Only one
+     * suggestion is ever in the player at a time. Respects the "Enable similar content" setting
+     * (Settings > Player), whose job is exactly this: keep playing similar songs at the end of
+     * the queue. Must run on the main thread.
+     */
+    private fun maybePromoteAutoplay() {
+        if (!playerInitialized.value || player.mediaItemCount == 0) return
+        if (pendingAutoplayItem != null) {
+            refreshPendingAutoplayIndex()
+            if (pendingAutoplayItem != null) return
+        }
+        maybeLoadMoreAutoplay()
+        if (!cachedSimilarContent) return
+        if (player.hasNextMediaItem()) return
+        val suggestions = automixItems.value
+        if (suggestions.isEmpty()) return
+        val item = suggestions.first()
+        automixItems.value = suggestions.drop(1)
+        pendingAutoplayItem = item
+        insertAfterCurrent(listOf(item))
+        refreshPendingAutoplayIndex()
+        maybeLoadMoreAutoplay()
+    }
+
+    /** Tops up the Autoplay list from the radio's continuation pages when it runs low. */
+    private fun maybeLoadMoreAutoplay() {
+        val source = autoplaySource ?: return
+        if (autoplayLoadingMore || !cachedAutoLoadMore || automixItems.value.size > 5 || !source.hasNextPage()) return
+        autoplayLoadingMore = true
+        scope.launch(SilentHandler) {
+            try {
+                val more =
+                    withContext(Dispatchers.IO) {
+                        source
+                            .nextPage()
+                            .filterExplicit(cachedHideExplicit)
+                            .filterVideoSongs(cachedHideVideoSongs)
+                    }
+                if (autoplaySource !== source) return@launch
+                val known =
+                    automixItems.value.mapTo(HashSet()) { it.mediaId } +
+                        (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+                val fresh = more.filter { it.mediaId !in known }.distinctBy { it.mediaId }
+                if (fresh.isNotEmpty()) {
+                    automixItems.value = automixItems.value + fresh
+                    maybePromoteAutoplay()
+                }
+            } finally {
+                autoplayLoadingMore = false
+            }
+        }
     }
 
     fun playNext(items: List<MediaItem>) {
@@ -2225,6 +2378,14 @@ class MusicService :
             }
         }
 
+        insertAfterCurrent(items)
+    }
+
+    /**
+     * Inserts [items] right after the current song, in both index order and (when shuffle is on)
+     * play order, so they play next. Shared by playNext() and maybePromoteAutoplay().
+     */
+    private fun insertAfterCurrent(items: List<MediaItem>) {
         val insertIndex = player.currentMediaItemIndex + 1
         val shuffleEnabled = player.shuffleModeEnabled
 
@@ -2291,6 +2452,8 @@ class MusicService :
     }
 
     fun addToQueue(items: List<MediaItem>) {
+        // The user's songs always go ahead of Autoplay suggestions (FletchTunes).
+        demotePendingAutoplay()
         if (dataStore.get(PreventDuplicateTracksInQueueKey, false)) {
             val itemIds = items.map { it.mediaId }.toSet()
             val indicesToRemove = mutableListOf<Int>()
@@ -2745,7 +2908,17 @@ class MusicService :
             }
         }
 
+        // The waiting Autoplay suggestion has started: from here on it is a played song, and
+        // onEvents() promotes the next suggestion behind it.
+        if (pendingAutoplayItem != null && mediaItem?.mediaId == pendingAutoplayItem?.mediaId) {
+            pendingAutoplayItem = null
+            pendingAutoplayIndex.value = -1
+        }
+
+        // A single-song radio's continuation feeds the Autoplay list (maybeLoadMoreAutoplay()),
+        // never the user's queue.
         if (cachedAutoLoadMore &&
+            currentQueue !== autoplaySource &&
             reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
             player.mediaItemCount - player.currentMediaItemIndex <= 5 &&
             currentQueue.hasNextPage() &&
@@ -2938,6 +3111,17 @@ class MusicService :
             } else if (player.playbackState == Player.STATE_IDLE) {
                 closeAudioEffectSession()
             }
+        }
+        if (events.containsAny(
+                EVENT_TIMELINE_CHANGED,
+                Player.EVENT_MEDIA_ITEM_TRANSITION,
+                Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
+                Player.EVENT_REPEAT_MODE_CHANGED,
+            )
+        ) {
+            // Keep one Autoplay suggestion queued behind the user's last song (FletchTunes).
+            maybePromoteAutoplay()
+            refreshPendingAutoplayIndex()
         }
         if (events.containsAny(EVENT_TIMELINE_CHANGED, EVENT_POSITION_DISCONTINUITY)) {
             currentMediaMetadata.value = player.currentMetadata
@@ -4287,10 +4471,14 @@ class MusicService :
         }
     }
 
-    /** Media item indices in the order the player will actually play them. */
+    /**
+     * Media item indices in the order the player will actually play them, minus the waiting
+     * Autoplay suggestion, which is not part of the user's queue and so is never saved to it.
+     */
     private fun playOrderIndices(): List<Int> {
         val timeline = player.currentTimeline
         if (timeline.isEmpty) return emptyList()
+        val pendingIndex = refreshPendingAutoplayIndex()
         val shuffle = player.shuffleModeEnabled
         val order = ArrayList<Int>(timeline.windowCount)
         var index = timeline.getFirstWindowIndex(shuffle)
@@ -4298,6 +4486,7 @@ class MusicService :
             order += index
             index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, shuffle)
         }
+        if (pendingIndex >= 0) order.remove(pendingIndex)
         return order
     }
 
@@ -4308,18 +4497,24 @@ class MusicService :
         }
 
         try {
+            // The waiting Autoplay suggestion is saved with the Autoplay list, not the queue.
+            val pendingIndex = refreshPendingAutoplayIndex()
+            val currentIndex = player.currentMediaItemIndex
             val persistQueue =
                 currentQueue.toPersistQueue(
                     title = queueTitle,
-                    items = player.mediaItems.mapNotNull { it.metadata },
-                    mediaItemIndex = player.currentMediaItemIndex,
+                    items =
+                        player.mediaItems
+                            .filterIndexed { i, _ -> i != pendingIndex }
+                            .mapNotNull { it.metadata },
+                    mediaItemIndex = if (pendingIndex in 0 until currentIndex) currentIndex - 1 else currentIndex,
                     position = player.currentPosition,
                 )
 
             val persistAutomix =
                 PersistQueue(
                     title = "automix",
-                    items = automixItems.value.mapNotNull { it.metadata },
+                    items = (listOfNotNull(pendingAutoplayItem) + automixItems.value).mapNotNull { it.metadata },
                     mediaItemIndex = 0,
                     position = 0,
                 )

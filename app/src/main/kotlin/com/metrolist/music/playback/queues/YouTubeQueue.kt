@@ -24,6 +24,17 @@ class YouTubeQueue(
     override val queueSourceKey: String? =
         "yt_watch:${endpoint.playlistId ?: endpoint.videoId ?: "unknown"}"
 
+    /**
+     * FletchTunes: true when this queue was started from a single song (a bare videoId, or that
+     * song's RDAMVM radio). Everything YouTube returns after that song is a suggestion, not
+     * something the user chose, so MusicService.playQueue() keeps only the song in the player
+     * and holds the rest in the separate Autoplay list (automixItems). Read from the endpoint
+     * as passed in, before getInitialStatus() rewrites it.
+     */
+    val isSongRadio: Boolean =
+        endpoint.videoId != null &&
+            (endpoint.playlistId == null || endpoint.playlistId?.startsWith("RDAMVM") == true)
+
     private class EmptyRadioQueueException : IllegalStateException()
 
     override suspend fun getInitialStatus(): Queue.Status {
