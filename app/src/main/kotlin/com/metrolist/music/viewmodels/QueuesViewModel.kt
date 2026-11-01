@@ -26,9 +26,9 @@ constructor(
     val queueBoard: QueueBoard,
 ) : ViewModel() {
     val activeQueues = queueBoard.activeQueues
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val archivedQueues = queueBoard.archivedQueues
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val activeQueueId = queueBoard.activeQueueId
 
     private val _previewSongs = MutableStateFlow<Map<String, List<MediaMetadata>>>(emptyMap())

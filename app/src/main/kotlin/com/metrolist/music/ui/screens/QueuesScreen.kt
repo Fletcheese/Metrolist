@@ -58,6 +58,8 @@ import com.metrolist.music.extensions.toMediaItem
 import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.playback.queues.ListQueue
 import com.metrolist.music.ui.component.TextFieldDialog
+import com.metrolist.music.ui.component.shimmer.ListItemPlaceHolder
+import com.metrolist.music.ui.component.shimmer.ShimmerHost
 import com.metrolist.music.viewmodels.QueuesViewModel
 import kotlinx.coroutines.launch
 
@@ -104,7 +106,13 @@ fun QueuesScreen(
         }
     }
 
-    if (activeQueues.isEmpty() && archivedQueues.isEmpty()) {
+    if (activeQueues == null || archivedQueues == null) {
+        ShimmerHost(modifier = Modifier.fillMaxSize()) {
+            repeat(6) {
+                ListItemPlaceHolder()
+            }
+        }
+    } else if (activeQueues.orEmpty().isEmpty() && archivedQueues.orEmpty().isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
                 text = stringResource(R.string.no_active_queues),
@@ -114,11 +122,13 @@ fun QueuesScreen(
             )
         }
     } else {
+        val resolvedActiveQueues = activeQueues.orEmpty()
+        val resolvedArchivedQueues = archivedQueues.orEmpty()
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(12.dp),
         ) {
-            items(items = activeQueues, key = { it.id }) { queue ->
+            items(items = resolvedActiveQueues, key = { it.id }) { queue ->
                 QueueCard(
                     queue = queue,
                     isActive = queue.id == activeQueueId,
@@ -130,7 +140,7 @@ fun QueuesScreen(
                 )
             }
 
-            if (archivedQueues.isNotEmpty()) {
+            if (resolvedArchivedQueues.isNotEmpty()) {
                 item(key = "archived_header") {
                     Row(
                         modifier = Modifier
@@ -151,7 +161,7 @@ fun QueuesScreen(
                     }
                 }
                 if (showArchived) {
-                    items(items = archivedQueues, key = { "archived:${it.id}" }) { queue ->
+                    items(items = resolvedArchivedQueues, key = { "archived:${it.id}" }) { queue ->
                         QueueCard(
                             queue = queue,
                             isActive = false,
