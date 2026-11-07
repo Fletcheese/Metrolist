@@ -39,7 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,10 +71,10 @@ fun QueuesScreen(
     viewModel: QueuesViewModel = hiltViewModel(),
 ) {
     val playerConnection = LocalPlayerConnection.current
-    val activeQueues by viewModel.activeQueues.collectAsState()
-    val archivedQueues by viewModel.archivedQueues.collectAsState()
-    val activeQueueId by viewModel.activeQueueId.collectAsState()
-    val previewSongs by viewModel.previewSongs.collectAsState()
+    val activeQueues by viewModel.activeQueues.collectAsStateWithLifecycle()
+    val archivedQueues by viewModel.archivedQueues.collectAsStateWithLifecycle()
+    val activeQueueId by viewModel.activeQueueId.collectAsStateWithLifecycle()
+    val previewSongs by viewModel.previewSongs.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var queuePendingDelete by remember { mutableStateOf<QueueEntity?>(null) }

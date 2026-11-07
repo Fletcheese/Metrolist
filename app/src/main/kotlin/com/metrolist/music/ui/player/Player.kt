@@ -123,6 +123,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.Player.STATE_ENDED
@@ -742,14 +744,19 @@ fun BottomSheetPlayer(
     // Position update - only for local playback
     // When casting, we use castPosition directly to avoid sync issues
     // Use isPlaying instead of playbackState to ensure continuous updates during playback
+    // Only while the activity is started: delay() keeps running when it is stopped, which woke the
+    // main thread ten times a second for a progress bar nobody could see.
+    val positionLifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(isPlaying, isCasting) {
         if (!isCasting && isPlaying) {
-            while (isActive) {
-                delay(100) // Update more frequently for smoother progress bar
-                if (sliderPosition == null) { // Only update if user isn't dragging
-                    position = playerConnection.player.currentPosition
-                    // Don't clobber a valid (metadata-derived) duration with 0/UNSET mid-resolve.
-                    playerConnection.player.duration.takeIf { it > 0 }?.let { duration = it }
+            positionLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (isActive) {
+                    if (sliderPosition == null) { // Only update if user isn't dragging
+                        position = playerConnection.player.currentPosition
+                        // Don't clobber a valid (metadata-derived) duration with 0/UNSET mid-resolve.
+                        playerConnection.player.duration.takeIf { it > 0 }?.let { duration = it }
+                    }
+                    delay(100) // Update more frequently for smoother progress bar
                 }
             }
         }

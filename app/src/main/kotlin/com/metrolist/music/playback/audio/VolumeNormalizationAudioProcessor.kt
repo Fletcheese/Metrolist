@@ -61,24 +61,19 @@ class VolumeNormalizationAudioProcessor : BaseAudioProcessor() {
         val sampleCount = inputBuffer.remaining() / bytesPerSample
         val output = replaceOutputBuffer(sampleCount * bytesPerSample)
 
+        // Every second of audio passes through here. With no gain to apply, copy in one go
+        // rather than sample by sample.
+        if (!applyGain) {
+            output.put(inputBuffer)
+            output.flip()
+            return
+        }
+
         inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
         output.order(ByteOrder.LITTLE_ENDIAN)
 
         when (encoding) {
-            C.ENCODING_PCM_16BIT ->
-                repeat(sampleCount) {
-                    val sample = inputBuffer.getShort()
-                    output.putShort(
-                        if (applyGain) {
-                            (sample * gain.linearGain)
-                                .coerceIn(-32768.0, 32767.0)
-                                .toInt()
-                                .toShort()
-                        } else {
-                            sample
-                        },
-                    )
-                }
+            C.ENCODING_PCM_16BIT -> scalePcm16(inputBuffer, output, sampleCount, gain.linearGain)
 
             C.ENCODING_PCM_24BIT ->
                 repeat(sampleCount) {
@@ -128,6 +123,39 @@ class VolumeNormalizationAudioProcessor : BaseAudioProcessor() {
         }
 
         output.flip()
+    }
+
+    private var pcm16Scratch = ShortArray(0)
+
+    /**
+     * 16-bit PCM is what YouTube's Opus and AAC streams decode to. Scale it through a plain
+     * array with Q16 fixed-point gain: per-sample ByteBuffer calls and double maths here cost a
+     * few percent of a CPU core for every hour of playback.
+     */
+    private fun scalePcm16(
+        input: ByteBuffer,
+        output: ByteBuffer,
+        sampleCount: Int,
+        linearGain: Double,
+    ) {
+        if (pcm16Scratch.size < sampleCount) pcm16Scratch = ShortArray(sampleCount)
+        val samples = pcm16Scratch
+        input.asShortBuffer().get(samples, 0, sampleCount)
+        input.position(input.position() + sampleCount * 2)
+
+        val gainQ16 = (linearGain * 65536.0).toLong()
+        for (i in 0 until sampleCount) {
+            val scaled = (samples[i] * gainQ16) shr 16
+            samples[i] =
+                when {
+                    scaled > Short.MAX_VALUE -> Short.MAX_VALUE
+                    scaled < Short.MIN_VALUE -> Short.MIN_VALUE
+                    else -> scaled.toInt().toShort()
+                }
+        }
+
+        output.asShortBuffer().put(samples, 0, sampleCount)
+        output.position(output.position() + sampleCount * 2)
     }
 
     override fun onReset() {

@@ -108,6 +108,7 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.palette.graphics.Palette
 import coil3.ImageLoader
@@ -559,14 +560,17 @@ fun OriginalLyrics(
             currentLineIndex = -1
             return@LaunchedEffect
         }
-        while (isActive) {
-            delay(8) // Faster update for word-by-word animation
-            val sliderPosition = sliderPositionProvider()
-            isSeeking = sliderPosition != null
-            val position = sliderPosition ?: playerConnection.player.currentPosition
-            currentPlaybackPosition = position
-            val lyricsOffset = currentSong?.song?.lyricsOffset ?: 0
-            currentLineIndex = findCurrentLineIndex(lines, position + lyricsOffset)
+        // A 125 Hz loop: run it only while the activity is started, never behind a stopped screen.
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isActive) {
+                delay(8) // Faster update for word-by-word animation
+                val sliderPosition = sliderPositionProvider()
+                isSeeking = sliderPosition != null
+                val position = sliderPosition ?: playerConnection.player.currentPosition
+                currentPlaybackPosition = position
+                val lyricsOffset = currentSong?.song?.lyricsOffset ?: 0
+                currentLineIndex = findCurrentLineIndex(lines, position + lyricsOffset)
+            }
         }
     }
 

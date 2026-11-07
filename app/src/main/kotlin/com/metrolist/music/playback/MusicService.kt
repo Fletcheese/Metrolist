@@ -749,6 +749,9 @@ class MusicService :
                         PendingIntent.FLAG_IMMUTABLE,
                     ),
                 ).setBitmapLoader(CoilBitmapLoader(this, scope))
+                // Controllers extrapolate position from the playback state, so the default 3 s
+                // position push only woke System UI and the Bluetooth stack for nothing.
+                .setPeriodicPositionUpdateEnabled(false)
                 .build()
         player.repeatMode = startupPrefs!![RepeatModeKey] ?: REPEAT_MODE_OFF
 
@@ -1132,6 +1135,7 @@ class MusicService :
         scope.launch {
             while (isActive) {
                 delay(5_000)
+                if (!discordRpcEnabled) continue
                 Timber.tag("DiscordSvc").v("polling: periodic syncDiscordState tick")
                 syncDiscordState()
             }
@@ -1439,6 +1443,9 @@ class MusicService :
                 ).setSeekBackIncrementMs(5000)
                 .setSeekForwardIncrementMs(5000)
                 .setDeviceVolumeControlEnabled(true)
+                // Wake the playback thread only when the audio sink can take more data, instead
+                // of every 10 ms: that loop was the app's largest CPU cost while playing.
+                .experimentalSetDynamicSchedulingEnabled(true)
                 .build()
         createdPlayer = player
 
