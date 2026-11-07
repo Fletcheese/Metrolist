@@ -14,6 +14,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.metrolist.music.LocalNavController
+import com.metrolist.music.BuildConfig
 import com.metrolist.music.R
 import com.metrolist.music.constants.AlbumViewTypeKey
 import com.metrolist.music.constants.ChipSortTypeKey
@@ -28,7 +29,10 @@ fun LibraryScreen() {
     val navController = LocalNavController.current
     var filterType by rememberEnumPreference(ChipSortTypeKey, LibraryFilter.LIBRARY)
     var libraryViewType by rememberEnumPreference(AlbumViewTypeKey, LibraryViewType.GRID)
-    var playlistViewType by rememberEnumPreference(PlaylistViewTypeKey, LibraryViewType.GRID)
+    var playlistViewType by rememberEnumPreference(
+        PlaylistViewTypeKey,
+        if (BuildConfig.DISCOVERY_FEATURES) LibraryViewType.GRID else LibraryViewType.LIST,
+    )
 
     val filterContent = @Composable {
         Row {

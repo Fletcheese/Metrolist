@@ -55,6 +55,7 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.metrolist.innertube.utils.parseCookieString
 import com.metrolist.music.LocalPlayerAwareWindowInsets
+import com.metrolist.music.BuildConfig
 import com.metrolist.music.R
 import com.metrolist.music.constants.CONTENT_TYPE_HEADER
 import com.metrolist.music.constants.CONTENT_TYPE_PLAYLIST
@@ -226,13 +227,13 @@ fun LibraryPlaylistsScreen(
     val (showTop) = rememberPreference(ShowTopPlaylistKey, true)
     val (showUploaded) = rememberPreference(ShowUploadedPlaylistKey, true)
     val (showCached) = rememberPreference(ShowCachedPlaylistKey, true)
-    val showLikedPlaylist = showLiked && matchesNormalizedQuery(normalizedQuery, likedPlaylist.playlist.name)
+    val showLikedPlaylist = BuildConfig.DISCOVERY_FEATURES && showLiked && matchesNormalizedQuery(normalizedQuery, likedPlaylist.playlist.name)
     val showDownloadedPlaylist =
-        showDownloaded && matchesNormalizedQuery(normalizedQuery, downloadPlaylist.playlist.name)
-    val showCachedPlaylists = showCached && matchesNormalizedQuery(normalizedQuery, cachedPlaylist.playlist.name)
-    val showTopPlaylists = showTop && matchesNormalizedQuery(normalizedQuery, topPlaylist.playlist.name)
+        BuildConfig.DISCOVERY_FEATURES && showDownloaded && matchesNormalizedQuery(normalizedQuery, downloadPlaylist.playlist.name)
+    val showCachedPlaylists = BuildConfig.DISCOVERY_FEATURES && showCached && matchesNormalizedQuery(normalizedQuery, cachedPlaylist.playlist.name)
+    val showTopPlaylists = BuildConfig.DISCOVERY_FEATURES && showTop && matchesNormalizedQuery(normalizedQuery, topPlaylist.playlist.name)
     val showUploadedPlaylists =
-        showUploaded && matchesNormalizedQuery(normalizedQuery, uploadedPlaylist.playlist.name)
+        BuildConfig.DISCOVERY_FEATURES && showUploaded && matchesNormalizedQuery(normalizedQuery, uploadedPlaylist.playlist.name)
 
     val visibleResults = remember(
         filteredPlaylists,
