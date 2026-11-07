@@ -1051,12 +1051,12 @@ class MusicService :
             }
 
         // Initialize Discord RPC manager (rehydrates token, reconnects gateway)
-        if (!DiscordRpcManager.isInitialized()) {
+        if (DISCORD_RPC_ALLOWED && !DiscordRpcManager.isInitialized()) {
             DiscordRpcManager.init(this@MusicService)
         }
 
         dataStore.data
-            .map { it[EnableDiscordRPCKey] ?: true }
+            .map { DISCORD_RPC_ALLOWED && (it[EnableDiscordRPCKey] ?: false) }
             .debounce(300)
             .distinctUntilChanged()
             .collect(scope) { enabled ->
@@ -1134,7 +1134,7 @@ class MusicService :
             }
         }
 
-        scope.launch {
+        if (DISCORD_RPC_ALLOWED) scope.launch {
             while (isActive) {
                 delay(5_000)
                 if (!discordRpcEnabled) continue
@@ -5706,6 +5706,10 @@ class MusicService :
         const val NOTIFICATION_ID = 888
         const val ERROR_CODE_NO_STREAM = 1000001
         const val CHUNK_LENGTH = 512 * 1024L
+
+        // FletchTunes: Discord Rich Presence is off for good, whatever the saved setting says.
+        // It woke the service every 5 s to poll, and Fletcher doesn't use Discord with it.
+        const val DISCORD_RPC_ALLOWED = false
         const val PERSISTENT_QUEUE_FILE = "persistent_queue.data"
         const val PERSISTENT_AUTOMIX_FILE = "persistent_automix.data"
         const val PERSISTENT_PLAYER_STATE_FILE = "persistent_player_state.data"

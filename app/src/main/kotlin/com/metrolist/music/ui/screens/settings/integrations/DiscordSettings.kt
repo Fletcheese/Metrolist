@@ -136,7 +136,7 @@ fun DiscordSettings(
     var discordAvatar by rememberPreference(DiscordAvatarKey, "")
     var infoDismissed by rememberPreference(DiscordInfoDismissedKey, false)
 
-    val (discordRPC, onDiscordRPCChange) = rememberPreference(EnableDiscordRPCKey, true)
+    val (discordRPC, onDiscordRPCChange) = rememberPreference(EnableDiscordRPCKey, false)
     val (advancedMode, onAdvancedModeChange) = rememberPreference(DiscordAdvancedModeKey, false)
 
     val (activityType, onActivityTypeChange) = rememberPreference(DiscordActivityTypeKey, DiscordDefaults.ACTIVITY_TYPE)
