@@ -9,9 +9,14 @@ import android.app.ActivityManager
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Process
+import android.os.UserManager
+import androidx.core.content.ContextCompat
 import android.widget.Toast
 import coil3.ImageLoader
 import coil3.PlatformContext
@@ -75,6 +80,51 @@ class App :
 
         // Install crash handler first
         CrashHandler.install(this)
+
+        // MusicAlarmRescheduleReceiver is direct-boot aware, so after a reboot this process starts
+        // before the first unlock, when SharedPreferences, DataStore and the database (all in
+        // credential-encrypted storage) cannot be opened. The receiver itself only needs
+        // device-protected storage; everything else waits for the unlock.
+        val userManager = getSystemService(UserManager::class.java)
+        if (userManager?.isUserUnlocked == false) {
+            initializeAfterUnlock()
+            return
+        }
+        initializeApp()
+    }
+
+    @Volatile
+    private var appInitialized = false
+
+    private fun initializeAfterUnlock() {
+        val receiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    context: Context,
+                    intent: Intent,
+                ) {
+                    runCatching { unregisterReceiver(this) }
+                    initializeApp()
+                }
+            }
+        ContextCompat.registerReceiver(
+            this,
+            receiver,
+            IntentFilter(Intent.ACTION_USER_UNLOCKED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        // The unlock may have landed between the check and the registration.
+        if (getSystemService(UserManager::class.java)?.isUserUnlocked == true) {
+            runCatching { unregisterReceiver(receiver) }
+            initializeApp()
+        }
+    }
+
+    @Synchronized
+    private fun initializeApp() {
+        if (appInitialized) return
+        appInitialized = true
+
         ArtistNameAliases.initialize(this)
 
         // preferencesDataStore uses filesDir/datastore; proactive mkdir reduces failures on odd ROM states

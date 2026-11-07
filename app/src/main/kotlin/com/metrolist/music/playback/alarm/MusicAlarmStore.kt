@@ -2,6 +2,7 @@ package com.metrolist.music.playback.alarm
 
 import android.content.Context
 import android.os.Build
+import android.os.UserManager
 import com.metrolist.music.constants.AlarmEnabledKey
 import com.metrolist.music.constants.AlarmEntriesKey
 import com.metrolist.music.constants.AlarmHourKey
@@ -71,7 +72,13 @@ object MusicAlarmStore {
     }
 
     suspend fun save(context: Context, entries: List<MusicAlarmEntry>) {
+        // Before the first unlock (LOCKED_BOOT_COMPLETED) only device-protected storage can be
+        // used, and an empty list there may only mean the DataStore copy was unreadable: writing
+        // "[]" would hide those alarms from every later load.
+        val locked = context.getSystemService(UserManager::class.java)?.isUserUnlocked == false
+        if (locked && entries.isEmpty()) return
         saveProtected(context, entries)
+        if (locked) return
         context.safeDataStoreEdit { prefs ->
             prefs[AlarmEntriesKey] = serialize(entries)
             prefs[AlarmNextTriggerAtKey] = entries.filter { it.enabled }.minOfOrNull { it.nextTriggerAt.takeIf { time -> time > 0L } ?: Long.MAX_VALUE }
