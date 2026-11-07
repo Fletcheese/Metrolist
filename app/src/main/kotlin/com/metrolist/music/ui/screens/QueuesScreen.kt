@@ -6,13 +6,14 @@
  * see FLETCHTUNES-QUEUES.md). Tapping a row switches playback to it and brings the player's
  * Queue page up (not just a silent switch); a chevron lets you preview its songs inline
  * without committing to that switch. Long-press (or the overflow icon) opens a small,
- * growable per-row menu - just rename for now. Archived (auto-hidden after a week untouched)
+ * growable per-row menu: rename, merge into another queue, delete. Archived (auto-hidden after a week untouched)
  * queues live in a collapsed section and can be restored.
  */
 
 package com.metrolist.music.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -45,6 +47,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.TextFieldValue
@@ -76,6 +79,8 @@ fun QueuesScreen(
 
     var queuePendingDelete by remember { mutableStateOf<QueueEntity?>(null) }
     var queuePendingRename by remember { mutableStateOf<QueueEntity?>(null) }
+    var queuePendingMerge by remember { mutableStateOf<QueueEntity?>(null) }
+    val context = LocalContext.current
     var showArchived by remember { mutableStateOf(false) }
 
     // Tapping a queue row should actually open it: switch MusicService's active queue to this
@@ -103,6 +108,60 @@ fun QueuesScreen(
                 resumeBoardQueueId = queue.id,
             )
             playerConnection?.requestOpenQueueSheet()
+        }
+    }
+
+    // "Merge into": append [source]'s songs to the end of [target] (skipping songs already in
+    // [target]), then delete [source]. Three cases, by which queue (if either) is playing:
+    //  - target playing: the songs go into the player through addToQueue(), which keeps them
+    //    ahead of any Autoplay suggestion and saves the queue itself.
+    //  - source playing: the merged target takes over playback at the same song and position,
+    //    playing or paused as before, so the music carries on from the queue it now lives in.
+    //  - neither: a straight database append to the target.
+    fun merge(source: QueueEntity, target: QueueEntity) {
+        scope.launch {
+            val board = viewModel.queueBoard
+            val player = playerConnection?.player
+            val playerHasQueue = (player?.mediaItemCount ?: 0) > 0
+            val added: Int
+            if (target.id == activeQueueId && player != null && playerHasQueue) {
+                val inPlayer = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }.toSet()
+                val songs = board.songsToMerge(source.id, inPlayer)
+                if (songs.isNotEmpty()) playerConnection?.addToQueue(songs.map { it.toMediaItem() })
+                added = songs.size
+            } else {
+                val targetSongs = board.loadSongs(target.id)
+                val songs = board.songsToMerge(source.id, targetSongs.map { it.id }.toSet())
+                board.appendSongs(target.id, songs)
+                added = songs.size
+                val merged = targetSongs + songs
+                if (source.id == activeQueueId && player != null && playerHasQueue && merged.isNotEmpty()) {
+                    val currentId = player.currentMediaItem?.mediaId
+                    val nowAt = merged.indexOfFirst { it.id == currentId }
+                    playerConnection?.playQueue(
+                        ListQueue(
+                            title = target.title,
+                            items = merged.map { it.toMediaItem() },
+                            startIndex = if (nowAt >= 0) nowAt else target.currentIndex.coerceIn(0, merged.size - 1),
+                            position = if (nowAt >= 0) player.currentPosition.coerceAtLeast(0L) else target.positionMs,
+                            sourceKey = target.sourceKey,
+                        ),
+                        resumeBoardQueueId = target.id,
+                        playWhenReady = player.playWhenReady,
+                    )
+                }
+            }
+            board.delete(source.id)
+            Toast.makeText(
+                context,
+                context.getString(
+                    R.string.queue_merged,
+                    target.title,
+                    added,
+                    (source.songCount - added).coerceAtLeast(0),
+                ),
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 
@@ -136,6 +195,7 @@ fun QueuesScreen(
                     onPlay = { switchTo(queue) },
                     onDelete = { queuePendingDelete = queue },
                     onRename = { queuePendingRename = queue },
+                    onMerge = { queuePendingMerge = queue },
                     onExpand = { viewModel.loadPreview(queue) },
                 )
             }
@@ -170,6 +230,7 @@ fun QueuesScreen(
                             onPlay = { viewModel.unarchive(queue) },
                             onDelete = { queuePendingDelete = queue },
                             onRename = { queuePendingRename = queue },
+                            onMerge = { queuePendingMerge = queue },
                             onExpand = { viewModel.loadPreview(queue) },
                         )
                     }
@@ -191,6 +252,77 @@ fun QueuesScreen(
             },
             dismissButton = {
                 TextButton(onClick = { queuePendingDelete = null }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
+
+    queuePendingMerge?.let { source ->
+        val targets = activeQueues.orEmpty().filter { it.id != source.id }
+        AlertDialog(
+            onDismissRequest = { queuePendingMerge = null },
+            title = { Text(stringResource(R.string.merge_queue_title, source.title)) },
+            text = {
+                if (targets.isEmpty()) {
+                    Text(stringResource(R.string.merge_queue_no_targets))
+                } else {
+                    Column {
+                        Text(
+                            text = stringResource(R.string.merge_queue_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                        LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                            items(items = targets, key = { it.id }) { target ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            queuePendingMerge = null
+                                            merge(source, target)
+                                        }
+                                        .padding(vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.queue_music),
+                                        contentDescription = null,
+                                        modifier = Modifier.padding(end = 12.dp),
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = target.title,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            maxLines = 1,
+                                        )
+                                        Text(
+                                            text = stringResource(
+                                                R.string.queue_position,
+                                                (target.currentIndex + 1).coerceIn(1, target.songCount.coerceAtLeast(1)),
+                                                target.songCount,
+                                            ),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        if (target.id == activeQueueId) {
+                                            Text(
+                                                text = stringResource(R.string.queue_now_playing),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { queuePendingMerge = null }) {
                     Text(stringResource(R.string.cancel))
                 }
             },
@@ -222,6 +354,7 @@ private fun QueueCard(
     onPlay: () -> Unit,
     onDelete: () -> Unit,
     onRename: () -> Unit,
+    onMerge: () -> Unit,
     onExpand: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -314,6 +447,16 @@ private fun QueueCard(
                         onClick = {
                             showMenu = false
                             onRename()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.merge_queue)) },
+                        leadingIcon = {
+                            Icon(painter = painterResource(R.drawable.playlist_add), contentDescription = null)
+                        },
+                        onClick = {
+                            showMenu = false
+                            onMerge()
                         },
                     )
                     DropdownMenuItem(

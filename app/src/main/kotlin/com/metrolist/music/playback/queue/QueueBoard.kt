@@ -202,6 +202,48 @@ class QueueBoard @Inject constructor(
         if (_activeQueueId.value == id) _activeQueueId.value = null
     }
 
+    /**
+     * "Merge into": the songs of [sourceId] to append to another queue, in the source queue's
+     * saved order, leaving out any song already in [alreadyThere] (the target's songs) and any
+     * repeat within the source itself, so a merge never doubles a song up.
+     */
+    suspend fun songsToMerge(sourceId: String, alreadyThere: Set<String>): List<MediaMetadata> {
+        val seen = alreadyThere.toMutableSet()
+        return loadSongs(sourceId).filter { seen.add(it.id) }
+    }
+
+    /**
+     * Appends [songs] to the end of queue [id]'s saved song list, for a queue that is not the one
+     * playing (the playing queue is appended to through the player instead, which saves itself).
+     * A shuffled queue keeps its saved shuffle order, with the new songs at the end of both its
+     * real order and its play order, so it still resumes shuffled.
+     */
+    suspend fun appendSongs(id: String, songs: List<MediaMetadata>) = withContext(Dispatchers.IO) {
+        if (songs.isEmpty()) return@withContext
+        mutex.withLock {
+            ensureSongsExist(songs)
+            val existingIds = queueDao.getSongMapsOnce(id).map { it.songId }
+            val oldSize = existingIds.size
+            val newIds = existingIds + songs.map { it.id }
+            queueDao.replaceSongMaps(id, newIds.mapIndexed { index, songId -> QueueSongMapEntity(id, songId, index) })
+            val file = shuffleOrderFile(id)
+            if (file.exists()) {
+                runCatching {
+                    val order = file.readText().split(',').map { it.trim().toInt() }
+                    if (order.size == oldSize) {
+                        val tmp = File(file.path + ".tmp")
+                        tmp.writeText((order + (oldSize until newIds.size)).joinToString(","))
+                        if (!tmp.renameTo(file)) {
+                            file.delete()
+                            tmp.renameTo(file)
+                        }
+                    }
+                }
+            }
+            queueDao.touch(id, System.currentTimeMillis())
+        }
+    }
+
     suspend fun unarchive(id: String) = withContext(Dispatchers.IO) {
         queueDao.unarchiveQueue(id, System.currentTimeMillis())
     }
