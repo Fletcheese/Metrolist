@@ -62,6 +62,12 @@ android {
         buildConfigField("String", "LASTFM_SECRET", "\"$lastFmSecret\"")
         buildConfigField("String", "ARCHITECTURE", "\"universal\"")
         buildConfigField("Long", "DISCORD_APP_ID", "1447278780795064401L")
+
+        // FletchTunes scale-down: false drops the Home feed, Explore, Listen Together and the
+        // background recommendation work, leaving Search, Queues and Library. Set it to true (or
+        // pass -PdiscoveryFeatures=true) to bring all of it back.
+        val discoveryFeatures = (project.findProperty("discoveryFeatures") as String?)?.toBoolean() ?: false
+        buildConfigField("Boolean", "DISCOVERY_FEATURES", discoveryFeatures.toString())
     }
 
     flavorDimensions += listOf("variant")

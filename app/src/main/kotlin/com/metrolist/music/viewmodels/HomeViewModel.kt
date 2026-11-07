@@ -24,6 +24,7 @@ import com.metrolist.innertube.models.filterYoutubeShorts
 import com.metrolist.innertube.pages.ExplorePage
 import com.metrolist.innertube.pages.HomePage
 import com.metrolist.innertube.utils.completed
+import com.metrolist.music.BuildConfig
 import com.metrolist.music.constants.AccountNameKey
 import com.metrolist.music.constants.HideExplicitKey
 import com.metrolist.music.constants.HideVideoSongsKey
@@ -683,6 +684,11 @@ class HomeViewModel @Inject constructor(
         (this as List<T?>).filterNotNull()
 
     fun refresh() {
+        if (!BuildConfig.DISCOVERY_FEATURES) {
+            // No Home feed to reload: only the library sync is wanted.
+            viewModelScope.launch(Dispatchers.IO) { syncUtils.tryAutoSync() }
+            return
+        }
         if (isRefreshing.value) return
         isRefreshing.value = true
         viewModelScope.launch(Dispatchers.IO) {
@@ -723,8 +729,10 @@ class HomeViewModel @Inject constructor(
             syncUtils.tryAutoSync()
         }
 
+        // Reloading the Home feed on every reconnect runs dozens of requests, even with the app in
+        // the background; without the Home tab there is nothing to reload.
         var wasOffline = !networkConnectivity.networkStatus.value
-        viewModelScope.launch(Dispatchers.IO) {
+        if (BuildConfig.DISCOVERY_FEATURES) viewModelScope.launch(Dispatchers.IO) {
             networkConnectivity.networkStatus.collect { isConnected ->
                 if (!isConnected) {
                     wasOffline = true

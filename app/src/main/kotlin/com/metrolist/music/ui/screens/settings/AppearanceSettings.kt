@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.metrolist.music.LocalPlayerAwareWindowInsets
+import com.metrolist.music.BuildConfig
 import com.metrolist.music.R
 import com.metrolist.music.constants.ChipSortTypeKey
 import com.metrolist.music.constants.CropAlbumArtKey
@@ -598,7 +599,7 @@ fun AppearanceSettings(
             },
             title = stringResource(R.string.default_open_tab),
             current = defaultOpenTab,
-            values = NavigationTab.values().toList(),
+            values = NavigationTab.values().filter { BuildConfig.DISCOVERY_FEATURES || it != NavigationTab.HOME },
             valueText = {
                 when (it) {
                     NavigationTab.HOME -> stringResource(R.string.home)

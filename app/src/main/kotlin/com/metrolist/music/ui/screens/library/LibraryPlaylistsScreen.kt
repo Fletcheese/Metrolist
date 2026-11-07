@@ -85,8 +85,11 @@ import com.metrolist.music.ui.component.PlaylistListItem
 import com.metrolist.music.ui.component.SortHeader
 import com.metrolist.music.extensions.matchesNormalizedQuery
 import com.metrolist.music.extensions.normalizeForSearch
+import androidx.compose.ui.platform.LocalContext
+import com.metrolist.music.utils.DiscoverMix
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
+import kotlinx.coroutines.launch
 import com.metrolist.music.viewmodels.LibraryPlaylistsViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -194,6 +197,30 @@ fun LibraryPlaylistsScreen(
             songThumbnails = emptyList(),
         )
 
+    val discoverMixPlaylist =
+        Playlist(
+            playlist = PlaylistEntity(
+                id = UUID.randomUUID().toString(),
+                name = stringResource(R.string.discover_mix)
+            ),
+            songCount = 0,
+            songThumbnails = emptyList(),
+        )
+
+    val context = LocalContext.current
+    val (innerTubeCookie) = rememberPreference(InnerTubeCookieKey, "")
+    val isLoggedIn = remember(innerTubeCookie) {
+        "SAPISID" in parseCookieString(innerTubeCookie)
+    }
+    val showDiscoverMix = isLoggedIn && matchesNormalizedQuery(normalizedQuery, discoverMixPlaylist.playlist.name)
+    val openRoute: (String) -> Unit = { route ->
+        if (route == DiscoverMix.ROUTE) {
+            coroutineScope.launch { DiscoverMix.open(context, navController) }
+        } else {
+            navController.navigate(route)
+        }
+    }
+
     val (showLiked) = rememberPreference(ShowLikedPlaylistKey, true)
     val (showDownloaded) = rememberPreference(ShowDownloadedPlaylistKey, true)
     val (showTop) = rememberPreference(ShowTopPlaylistKey, true)
@@ -209,6 +236,7 @@ fun LibraryPlaylistsScreen(
 
     val visibleResults = remember(
         filteredPlaylists,
+        showDiscoverMix,
         showLikedPlaylist,
         showDownloadedPlaylist,
         showCachedPlaylists,
@@ -217,6 +245,16 @@ fun LibraryPlaylistsScreen(
         topSize,
     ) {
         buildList {
+            if (showDiscoverMix) {
+                add(
+                    VisiblePlaylistItem(
+                        key = "discoverMixPlaylist",
+                        playlist = discoverMixPlaylist,
+                        autoPlaylist = true,
+                        route = DiscoverMix.ROUTE,
+                    ),
+                )
+            }
             if (showLikedPlaylist) {
                 add(
                     VisiblePlaylistItem(
@@ -288,11 +326,6 @@ fun LibraryPlaylistsScreen(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val scrollToTop =
         backStackEntry?.savedStateHandle?.getStateFlow("scrollToTop", false)?.collectAsStateWithLifecycle()
-
-    val (innerTubeCookie) = rememberPreference(InnerTubeCookieKey, "")
-    val isLoggedIn = remember(innerTubeCookie) {
-        "SAPISID" in parseCookieString(innerTubeCookie)
-    }
 
     val (ytmSync) = rememberPreference(YtmSyncKey, true)
 
@@ -452,7 +485,7 @@ fun LibraryPlaylistsScreen(
                                     Modifier
                                         .fillMaxWidth()
                                         .clickable {
-                                            item.route?.let(navController::navigate)
+                                            item.route?.let(openRoute)
                                         }
                                         .animateItem(),
                             )
@@ -522,7 +555,7 @@ fun LibraryPlaylistsScreen(
                                         .fillMaxWidth()
                                         .combinedClickable(
                                             onClick = {
-                                                item.route?.let(navController::navigate)
+                                                item.route?.let(openRoute)
                                             },
                                         )
                                         .animateItem(),

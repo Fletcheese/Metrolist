@@ -240,6 +240,7 @@ val LastFullSyncKey = longPreferencesKey("last_full_sync")
 val LastWeeklyMostPlaylistSyncKey = longPreferencesKey("last_weekly_most_playlist_sync")
 val LastMonthlyMostPlaylistSyncKey = longPreferencesKey("last_monthly_most_playlist_sync")
 val ShowMostStatsPlaylistsKey = booleanPreferencesKey("show_most_stats_playlists")
+val DiscoverMixPlaylistIdKey = stringPreferencesKey("discover_mix_playlist_id")
 
 // Sync cooldown in seconds (30 minutes)
 const val SYNC_COOLDOWN = 30 * 60L

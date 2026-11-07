@@ -738,7 +738,8 @@ class MainActivity : FragmentActivity() {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val (previousTab, setPreviousTab) = rememberSaveable { mutableStateOf("home") }
 
-                val (listenTogetherInTopBar) = rememberPreference(ListenTogetherInTopBarKey, defaultValue = true)
+                val (listenTogetherInTopBarPref) = rememberPreference(ListenTogetherInTopBarKey, defaultValue = true)
+                val listenTogetherInTopBar = BuildConfig.DISCOVERY_FEATURES && listenTogetherInTopBarPref
                 val navigationItems =
                     remember(listenTogetherInTopBar) {
                         if (listenTogetherInTopBar) {
@@ -1354,7 +1355,7 @@ class MainActivity : FragmentActivity() {
                                     navController = navController,
                                     startDestination =
                                         when (tabOpenedFromShortcut ?: defaultOpenTab) {
-                                            NavigationTab.HOME -> Screens.Home
+                                            NavigationTab.HOME -> if (BuildConfig.DISCOVERY_FEATURES) Screens.Home else Screens.Queues
                                             NavigationTab.SEARCH -> Screens.Search
                                             NavigationTab.LIBRARY -> Screens.Library
                                             NavigationTab.QUEUES -> Screens.Queues

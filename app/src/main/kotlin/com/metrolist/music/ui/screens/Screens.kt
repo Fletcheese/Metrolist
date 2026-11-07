@@ -8,6 +8,7 @@ package com.metrolist.music.ui.screens
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Immutable
+import com.metrolist.music.BuildConfig
 import com.metrolist.music.R
 
 @Immutable
@@ -53,6 +54,11 @@ sealed class Screens(
     )
 
     companion object {
-        val MainScreens = listOf(Home, Search, ListenTogether, Queues, Library)
+        val MainScreens =
+            if (BuildConfig.DISCOVERY_FEATURES) {
+                listOf(Home, Search, ListenTogether, Queues, Library)
+            } else {
+                listOf(Search, Queues, Library)
+            }
     }
 }

@@ -99,6 +99,7 @@ import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.WatchEndpoint
 import com.metrolist.innertubex.extraction.ContentHints
 import com.metrolist.lastfm.LastFM
+import com.metrolist.music.BuildConfig
 import com.metrolist.music.MainActivity
 import com.metrolist.music.R
 import com.metrolist.music.constants.AddToPlaylistPosition
@@ -1809,7 +1810,8 @@ class MusicService :
             }
         }
 
-        if (!database.hasRelatedSongs(mediaId)) {
+        // Related songs only feed the Home screen's recommendations: two requests per song.
+        if (BuildConfig.DISCOVERY_FEATURES && !database.hasRelatedSongs(mediaId)) {
             val relatedEndpoint =
                 YouTube.next(WatchEndpoint(videoId = mediaId)).getOrNull()?.relatedEndpoint
                     ?: return

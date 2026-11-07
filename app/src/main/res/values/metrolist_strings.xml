@@ -1016,4 +1016,7 @@
     <string name="merge_queue_hint">Its songs go to the end of the queue you pick, and this queue is deleted. Songs already there are skipped.</string>
     <string name="merge_queue_no_targets">No other queues to merge into</string>
     <string name="queue_merged">Merged into %1$s: %2$d added, %3$d already there</string>
+    <string name="discover_mix">Discover Mix</string>
+    <string name="discover_mix_finding">Finding your Discover Mix…</string>
+    <string name="discover_mix_not_found">YouTube Music didn\'t offer a Discover Mix for this account</string>
 </resources>
