@@ -9,6 +9,8 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.ForegroundServiceStartNotAllowedException
 import android.app.PendingIntent
+import android.app.SearchManager
+import android.provider.MediaStore
 import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
@@ -223,6 +225,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.Locale
@@ -998,11 +1002,13 @@ class MainActivity : FragmentActivity() {
 
                 LaunchedEffect(Unit) {
                     if (pendingIntent != null) {
+                        handleVoicePlayIntent(pendingIntent!!)
                         handleWidgetTargetIntent(pendingIntent!!, navController)
                         handleRecognitionIntent(pendingIntent!!, navController)
                         handleDeepLinkIntent(pendingIntent!!, navController)
                         pendingIntent = null
                     } else {
+                        handleVoicePlayIntent(intent)
                         handleWidgetTargetIntent(intent, navController)
                         handleRecognitionIntent(intent, navController)
                         handleDeepLinkIntent(intent, navController)
@@ -1012,6 +1018,7 @@ class MainActivity : FragmentActivity() {
                 DisposableEffect(Unit) {
                     val listener =
                         Consumer<Intent> { intent ->
+                            handleVoicePlayIntent(intent)
                             handleWidgetTargetIntent(intent, navController)
                             handleRecognitionIntent(intent, navController)
                             handleDeepLinkIntent(intent, navController)
@@ -1552,6 +1559,26 @@ class MainActivity : FragmentActivity() {
         intent.removeExtra(EXTRA_AUTO_START_RECOGNITION)
         navController.navigate(if (autoStart) "recognition?autoStart=true" else "recognition") {
             launchSingleTop = true
+        }
+    }
+
+    /**
+     * FletchTunes: "play X on FletchTunes" from Assistant on the phone. The query and its focus
+     * extras go through the same voice path Android Auto uses.
+     */
+    private fun handleVoicePlayIntent(intent: Intent) {
+        if (intent.action != MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
+        val query = intent.getStringExtra(SearchManager.QUERY).orEmpty()
+        val extras = intent.extras?.let { bundle ->
+            bundle.keySet().associateWith { key -> bundle.getString(key) }
+        }.orEmpty()
+        intent.action = null
+        lifecycleScope.launch {
+            val connection = withTimeoutOrNull(10_000L) {
+                while (playerConnection == null) delay(100)
+                playerConnection
+            } ?: return@launch
+            connection.service.mediaLibrarySessionCallback.playFromVoiceSearch(query, extras)
         }
     }
 

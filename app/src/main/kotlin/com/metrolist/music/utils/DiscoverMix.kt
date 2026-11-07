@@ -50,6 +50,14 @@ object DiscoverMix {
         navController.navigate("online_playlist/$playlistId")
     }
 
+    /** The Discover Mix playlist id without any UI (Android Auto): the remembered one, else found and remembered. */
+    suspend fun playlistId(context: Context): String? {
+        context.dataStore.data.first()[DiscoverMixPlaylistIdKey]?.takeIf { it.isNotBlank() }?.let { return it }
+        val found = withContext(Dispatchers.IO) { find() } ?: return null
+        context.safeDataStoreEdit { it[DiscoverMixPlaylistIdKey] = found.id }
+        return found.id
+    }
+
     /** Discover Mix, or My Supermix when the feed offers no Discover Mix. */
     private suspend fun find(): PlaylistItem? {
         var fallback: PlaylistItem? = null

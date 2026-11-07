@@ -61,6 +61,7 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 import kotlin.math.roundToInt
 
 enum class AndroidAutoSection(val id: String) {
+    QUEUES("queues"),
     LIKED("liked"),
     SONGS("songs"),
     ARTISTS("artists"),
@@ -70,6 +71,7 @@ enum class AndroidAutoSection(val id: String) {
 
 @Composable
 fun AndroidAutoSection.label(): String = when (this) {
+    AndroidAutoSection.QUEUES -> stringResource(R.string.queues)
     AndroidAutoSection.LIKED -> stringResource(R.string.liked_songs)
     AndroidAutoSection.SONGS -> stringResource(R.string.songs)
     AndroidAutoSection.ARTISTS -> stringResource(R.string.artists)
@@ -80,15 +82,34 @@ fun AndroidAutoSection.label(): String = when (this) {
 fun serializeSections(sections: List<Pair<AndroidAutoSection, Boolean>>): String =
     sections.joinToString(",") { (section, enabled) -> "${section.id}:$enabled" }
 
+/**
+ * FletchTunes: the car opens on Queues, Playlists and Liked songs. Songs, Artists and Albums stay
+ * available here, switched off.
+ */
+val DefaultAndroidAutoSections: List<Pair<AndroidAutoSection, Boolean>> = listOf(
+    AndroidAutoSection.QUEUES to true,
+    AndroidAutoSection.PLAYLISTS to true,
+    AndroidAutoSection.LIKED to true,
+    AndroidAutoSection.SONGS to false,
+    AndroidAutoSection.ARTISTS to false,
+    AndroidAutoSection.ALBUMS to false,
+)
+
+val DefaultAndroidAutoSectionsRaw: String = serializeSections(DefaultAndroidAutoSections)
+
 fun deserializeSections(raw: String): List<Pair<AndroidAutoSection, Boolean>> {
-    if (raw.isBlank()) return AndroidAutoSection.values().map { it to true }
-    return raw.split(",").mapNotNull { token ->
+    if (raw.isBlank()) return DefaultAndroidAutoSections
+    val saved = raw.split(",").mapNotNull { token ->
         val parts = token.split(":")
         if (parts.size != 2) return@mapNotNull null
         val section = AndroidAutoSection.values().find { it.id == parts[0] } ?: return@mapNotNull null
         val enabled = parts[1].toBooleanStrictOrNull() ?: true
         section to enabled
-    }
+    }.distinctBy { it.first }
+    // A section added after the order was saved (Queues) goes where the default puts it:
+    // first when it is on by default, last when it is off.
+    val missing = DefaultAndroidAutoSections.filter { (section, _) -> saved.none { it.first == section } }
+    return missing.filter { it.second } + saved + missing.filterNot { it.second }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -110,7 +131,7 @@ fun AndroidAutoSettings(
 
     val (sectionsRaw, onSectionsChange) = rememberPreference(
         key = AndroidAutoSectionsOrderKey,
-        defaultValue = serializeSections(AndroidAutoSection.values().map { it to true })
+        defaultValue = DefaultAndroidAutoSectionsRaw
     )
 
     val (targetPlaylist, onTargetPlaylistChange) = rememberPreference(
@@ -183,6 +204,7 @@ fun AndroidAutoSettings(
                             Material3SettingsItem(
                                 icon = painterResource(
                                     when (section) {
+                                        AndroidAutoSection.QUEUES -> R.drawable.queue_music
                                         AndroidAutoSection.LIKED -> R.drawable.favorite
                                         AndroidAutoSection.SONGS -> R.drawable.music_note
                                         AndroidAutoSection.ARTISTS -> R.drawable.artist

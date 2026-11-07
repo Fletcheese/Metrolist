@@ -69,10 +69,15 @@ import com.metrolist.music.constants.AutoRadioQueueKey
 import com.metrolist.music.playback.queues.ListQueue
 import com.metrolist.music.playback.queues.Queue
 import com.metrolist.music.playback.queues.YouTubeQueue
+import com.metrolist.music.playback.queue.QueueBoard
 import com.metrolist.music.ui.screens.settings.AndroidAutoSection
+import com.metrolist.music.ui.screens.settings.DefaultAndroidAutoSectionsRaw
 import com.metrolist.music.ui.screens.settings.deserializeSections
-import com.metrolist.music.ui.screens.settings.serializeSections
+import com.metrolist.music.utils.DiscoverMix
+import androidx.media3.session.MediaConstants
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MediaLibrarySessionCallback
 @Inject
@@ -80,6 +85,7 @@ constructor(
     @ApplicationContext val context: Context,
     val database: MusicDatabase,
     val downloadUtil: DownloadUtil,
+    val queueBoard: QueueBoard,
 ) : MediaLibrarySession.Callback {
     private val scope = CoroutineScope(Dispatchers.Main) + Job()
     lateinit var service: MusicService
@@ -130,14 +136,72 @@ constructor(
         return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
     }
 
-    @Suppress("OVERRIDE_DEPRECATION")
+    /**
+     * FletchTunes: "play" from the car, a headset or the system media controls with nothing
+     * loaded resumes the last QueueBoard queue. MusicService.onCreate() already restores that
+     * queue (with its saved shuffle order) on its own, so this waits for that rather than
+     * setting the songs again, which would lose the shuffle order. Once the player has songs,
+     * the future fails on purpose: Media3 then just presses play on what is there.
+     */
     override fun onPlaybackResumption(
         mediaSession: MediaSession,
-        controller: MediaSession.ControllerInfo
+        controller: MediaSession.ControllerInfo,
+        isForPlayback: Boolean,
     ): ListenableFuture<MediaItemsWithStartPosition> =
-        Futures.immediateFuture(
-            MediaItemsWithStartPosition(emptyList(), 0, C.TIME_UNSET),
-        )
+        scope.future {
+            val player = service.player
+            awaitPlayerItems(RESTORE_WAIT_MS)
+            if (player.mediaItemCount > 0) {
+                if (isForPlayback) throw HandledByService()
+                return@future MediaItemsWithStartPosition(
+                    (0 until player.mediaItemCount).map { player.getMediaItemAt(it) },
+                    player.currentMediaItemIndex,
+                    player.currentPosition,
+                )
+            }
+            val (queue, songs) =
+                queueBoard.mostRecentQueue()?.takeIf { it.second.isNotEmpty() }
+                    ?: return@future MediaItemsWithStartPosition(emptyList(), 0, C.TIME_UNSET)
+            val startIndex = queue.currentIndex.coerceIn(0, songs.size - 1)
+            if (!isForPlayback) {
+                return@future MediaItemsWithStartPosition(songs.map { it.toMediaItem() }, startIndex, queue.positionMs)
+            }
+            resumeBoardQueue(queue.id)
+            awaitPlayerItems(RESTORE_WAIT_MS)
+            throw HandledByService()
+        }
+
+    private suspend fun awaitPlayerItems(timeoutMs: Long) {
+        withContext(Dispatchers.Main) {
+            withTimeoutOrNull(timeoutMs) {
+                while (service.player.mediaItemCount == 0) delay(100)
+            }
+        }
+    }
+
+    /** Plays a saved QueueBoard queue the way the Queues tab does: same row, saved song, position and shuffle order. */
+    private suspend fun resumeBoardQueue(queueId: String): Boolean {
+        val queue = queueBoard.queueFlow(queueId).first() ?: return false
+        val songs = queueBoard.loadSongs(queueId)
+        if (songs.isEmpty()) return false
+        withContext(Dispatchers.Main) {
+            if (queueBoard.activeQueueId.value == queueId && service.player.mediaItemCount > 0) {
+                service.player.play()
+            } else {
+                service.playQueue(
+                    ListQueue(
+                        title = queue.title,
+                        items = songs.map { it.toMediaItem() },
+                        startIndex = queue.currentIndex.coerceIn(0, songs.size - 1),
+                        position = queue.positionMs,
+                        sourceKey = queue.sourceKey,
+                    ),
+                    resumeBoardQueueId = queue.id,
+                )
+            }
+        }
+        return true
+    }
 
     override fun onGetLibraryRoot(
         session: MediaLibrarySession,
@@ -157,9 +221,23 @@ constructor(
                             .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
                             .build(),
                     ).build(),
-                params,
+                rootParams(params),
             ),
         )
+
+    /** Car content style: playlists, artists and albums as a grid, songs and queues as a list. */
+    private fun rootParams(params: MediaLibraryService.LibraryParams?): MediaLibraryService.LibraryParams {
+        val extras = Bundle(params?.extras ?: Bundle.EMPTY).apply {
+            putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_BROWSABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM)
+            putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM)
+        }
+        return MediaLibraryService.LibraryParams.Builder()
+            .setOffline(params?.isOffline ?: false)
+            .setRecent(params?.isRecent ?: false)
+            .setSuggested(params?.isSuggested ?: false)
+            .setExtras(extras)
+            .build()
+    }
 
     override fun onSubscribe(
         session: MediaLibrarySession,
@@ -191,17 +269,18 @@ constructor(
 
                 val children = when (parentId) {
                     MusicService.ROOT -> {
-                        val sectionsRaw = context.dataStore.get(
-                            AndroidAutoSectionsOrderKey,
-                            serializeSections(AndroidAutoSection.values().map { it to true })
-                        )
-                        val sections = deserializeSections(sectionsRaw)
+                        val sectionsRaw = context.dataStore.get(AndroidAutoSectionsOrderKey, DefaultAndroidAutoSectionsRaw)
                         val showYoutubePlaylists = context.dataStore.get(AndroidAutoYouTubePlaylistsKey, false)
-                        val rootItems = sections
-                            .filter { (_, enabled) -> enabled }
-                            .ifEmpty { listOf(AndroidAutoSection.LIKED to true) }
-                            .map { (section, _) ->
+                        val rootItems = androidAutoRootSections(sectionsRaw)
+                            .map { section ->
                                 when (section) {
+                                    AndroidAutoSection.QUEUES -> browsableMediaItem(
+                                        AA_QUEUES,
+                                        context.getString(R.string.queues),
+                                        null,
+                                        drawableUri(R.drawable.queue_music),
+                                        MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+                                    )
                                     AndroidAutoSection.LIKED -> browsableMediaItem(
                                         "${MusicService.PLAYLIST}/${PlaylistEntity.LIKED_PLAYLIST_ID}",
                                         context.getString(R.string.liked_songs),
@@ -234,7 +313,7 @@ constructor(
                                         MusicService.PLAYLIST,
                                         context.getString(R.string.playlists),
                                         null,
-                                        drawableUri(R.drawable.queue_music),
+                                        drawableUri(R.drawable.playlist_play),
                                         MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
                                     )
                                 }
@@ -295,58 +374,33 @@ constructor(
                         }
                     }
 
+                    AA_QUEUES -> queueBoard.activeQueues.first().map { queue ->
+                        val artwork = queue.currentSongId?.let { database.song(it).first()?.song?.thumbnailUrl?.toUri() }
+                        MediaItem.Builder()
+                            .setMediaId("$AA_QUEUES/${queue.id}")
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(queue.title)
+                                    .setSubtitle(
+                                        context.resources.getQuantityString(R.plurals.n_song, queue.songCount, queue.songCount),
+                                    )
+                                    .setArtworkUri(artwork ?: drawableUri(R.drawable.queue_music))
+                                    .setIsPlayable(true)
+                                    .setIsBrowsable(false)
+                                    .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
+                                    .build(),
+                            ).build()
+                    }
+
+                    AA_DISCOVER_MIX ->
+                        DiscoverMix.playlistId(context)
+                            ?.let { youtubePlaylistChildren("${MusicService.YOUTUBE_PLAYLIST}/$it", it) }
+                            ?: emptyList()
+
                     else ->
                         when {
-                            parentId.startsWith("${MusicService.YOUTUBE_PLAYLIST}/") -> {
-                                val playlistId = parentId.removePrefix("${MusicService.YOUTUBE_PLAYLIST}/")
-                                try {
-                                    val songs = YouTube.playlist(playlistId).getOrNull()?.songs
-                                        ?.take(100)
-                                        ?.filterExplicit(context.dataStore.get(HideExplicitKey, false))
-                                        ?.filterVideoSongs(context.dataStore.get(HideVideoSongsKey, false))
-                                        ?: emptyList()
-
-                                    // Add shuffle item at the top
-                                    listOf(
-                                        MediaItem.Builder()
-                                            .setMediaId("$parentId/${MusicService.SHUFFLE_ACTION}")
-                                            .setMediaMetadata(
-                                                MediaMetadata.Builder()
-                                                    .setTitle(context.getString(R.string.shuffle))
-                                                    .setArtworkUri(drawableUri(R.drawable.shuffle))
-                                                    .setIsPlayable(true)
-                                                    .setIsBrowsable(false)
-                                                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                                                    .build()
-                                            ).build()
-                                    ) + songs.map { songItem ->
-                                        MediaItem.Builder()
-                                            .setMediaId("$parentId/${songItem.id}")
-                                            .setMediaMetadata(
-                                                MediaMetadata.Builder()
-                                                    .setTitle(songItem.title)
-                                                    .setExtras(Bundle().apply {
-                                                        if (songItem.explicit) putLong(EXTRAS_KEY_IS_EXPLICIT, EXTRAS_VALUE_ATTRIBUTE_PRESENT)
-                                                    })
-                                                    .setSubtitle(songItem.artists.joinToArtistString(getArtistSeparator(context)) {
-                                                        ArtistNameAliases.resolve(it.id, it.name)
-                                                    })
-                                                    .setArtist(songItem.artists.joinToArtistString(getArtistSeparator(context)) {
-                                                        ArtistNameAliases.resolve(it.id, it.name)
-                                                    })
-                                                    .setArtworkUri(songItem.thumbnail.toUri())
-                                                    .setIsPlayable(true)
-                                                    .setIsBrowsable(false)
-                                                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                                                    .build()
-                                            )
-                                            .build()
-                                    }
-                                } catch (e: Exception) {
-                                    reportException(e)
-                                    emptyList()
-                                }
-                            }
+                            parentId.startsWith("${MusicService.YOUTUBE_PLAYLIST}/") ->
+                                youtubePlaylistChildren(parentId, parentId.removePrefix("${MusicService.YOUTUBE_PLAYLIST}/"))
 
                             else -> emptyList()
                         }
@@ -356,6 +410,55 @@ constructor(
                 reportException(e)
                 LibraryResult.ofItemList(emptyList(), params)
             }
+        }
+
+    private suspend fun youtubePlaylistChildren(parentId: String, playlistId: String): List<MediaItem> =
+        try {
+            val songs = YouTube.playlist(playlistId).getOrNull()?.songs
+                ?.take(100)
+                ?.filterExplicit(context.dataStore.get(HideExplicitKey, false))
+                ?.filterVideoSongs(context.dataStore.get(HideVideoSongsKey, false))
+                ?: emptyList()
+
+            // Add shuffle item at the top
+            listOf(
+                MediaItem.Builder()
+                    .setMediaId("$parentId/${MusicService.SHUFFLE_ACTION}")
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle(context.getString(R.string.shuffle))
+                            .setArtworkUri(drawableUri(R.drawable.shuffle))
+                            .setIsPlayable(true)
+                            .setIsBrowsable(false)
+                            .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                            .build()
+                    ).build()
+            ) + songs.map { songItem ->
+                MediaItem.Builder()
+                    .setMediaId("$parentId/${songItem.id}")
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle(songItem.title)
+                            .setExtras(Bundle().apply {
+                                if (songItem.explicit) putLong(EXTRAS_KEY_IS_EXPLICIT, EXTRAS_VALUE_ATTRIBUTE_PRESENT)
+                            })
+                            .setSubtitle(songItem.artists.joinToArtistString(getArtistSeparator(context)) {
+                                ArtistNameAliases.resolve(it.id, it.name)
+                            })
+                            .setArtist(songItem.artists.joinToArtistString(getArtistSeparator(context)) {
+                                ArtistNameAliases.resolve(it.id, it.name)
+                            })
+                            .setArtworkUri(songItem.thumbnail.toUri())
+                            .setIsPlayable(true)
+                            .setIsBrowsable(false)
+                            .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                            .build()
+                    )
+                    .build()
+            }
+        } catch (e: Exception) {
+            reportException(e)
+            emptyList()
         }
 
     private suspend fun loadLocalChildren(
@@ -423,10 +526,17 @@ constructor(
 
     private suspend fun loadPlaylistContainers(request: AndroidAutoPageRequest): List<MediaItem> {
         val builtInItems =
-            if (request.offset < 2 && request.limit > 0) {
+            if (request.offset < PLAYLIST_BUILT_IN_COUNT && request.limit > 0) {
                 val likedSongCount = database.likedSongsCount().first()
                 val downloadedSongCount = downloadUtil.downloads.value.size
                 listOf(
+                    browsableMediaItem(
+                        AA_DISCOVER_MIX,
+                        context.getString(R.string.discover_mix),
+                        null,
+                        drawableUri(R.drawable.explore_outlined),
+                        MediaMetadata.MEDIA_TYPE_PLAYLIST,
+                    ),
                     browsableMediaItem(
                         "${MusicService.PLAYLIST}/${PlaylistEntity.LIKED_PLAYLIST_ID}",
                         context.getString(R.string.liked_songs),
@@ -449,7 +559,7 @@ constructor(
             } else {
                 emptyList()
             }
-        val playlistRequest = request.afterLeadingItems(2)
+        val playlistRequest = request.afterLeadingItems(PLAYLIST_BUILT_IN_COUNT)
         val playlists =
             if (playlistRequest.limit == 0) {
                 emptyList()
@@ -645,38 +755,91 @@ constructor(
         startIndex: Int,
         startPositionMs: Long,
     ): ListenableFuture<MediaItemsWithStartPosition> =
-        scope.future(Dispatchers.IO) {
+        scope.future(Dispatchers.IO) { resolveMediaItems(mediaItems, startIndex, startPositionMs) }
+
+    /**
+     * FletchTunes: the phone's MEDIA_PLAY_FROM_SEARCH intent (MainActivity) goes through the same
+     * voice path as Android Auto and Assistant. A blank query ("play some music") resumes the
+     * last queue.
+     */
+    fun playFromVoiceSearch(query: String, extras: Map<String, String?>) {
+        scope.launch {
+            if (query.isBlank()) {
+                if (service.player.mediaItemCount > 0) {
+                    service.player.play()
+                } else {
+                    queueBoard.mostRecentQueue()?.first?.id?.let { resumeBoardQueue(it) }
+                }
+                return@launch
+            }
+            val request = MediaItem.Builder()
+                .setRequestMetadata(
+                    MediaItem.RequestMetadata.Builder()
+                        .setSearchQuery(query)
+                        .setExtras(Bundle().apply { extras.forEach { (key, value) -> putString(key, value) } })
+                        .build(),
+                ).build()
+            val result =
+                try {
+                    withContext(Dispatchers.IO) { resolveMediaItems(listOf(request), 0, C.TIME_UNSET) }
+                } catch (_: HandledByService) {
+                    return@launch
+                } catch (e: Exception) {
+                    reportException(e)
+                    return@launch
+                }
+            if (result.mediaItems.isEmpty()) return@launch
+            service.player.setMediaItems(result.mediaItems, result.startIndex, result.startPositionMs)
+            service.player.prepare()
+            service.player.play()
+        }
+    }
+
+    private suspend fun resolveMediaItems(
+        mediaItems: List<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): MediaItemsWithStartPosition {
             val defaultResult = MediaItemsWithStartPosition(emptyList(), startIndex, startPositionMs)
             val voiceQuery = mediaItems.firstOrNull()?.requestMetadata?.searchQuery
+            val voiceExtras = mediaItems.firstOrNull()?.requestMetadata?.extras?.let { bundle ->
+                bundle.keySet().associateWith { key -> bundle.getString(key) }
+            }.orEmpty()
 
             val path = if (!voiceQuery.isNullOrBlank()) {
                 listOf(MusicService.SEARCH, voiceQuery, "")
             } else {
                 mediaItems.firstOrNull()?.mediaId?.split("/")
-            } ?: return@future defaultResult
+            } ?: return defaultResult
 
-            when (path.firstOrNull()) {
+            return when (path.firstOrNull()) {
+                AA_QUEUES -> {
+                    val queueId = path.getOrNull(1) ?: return defaultResult
+                    if (!resumeBoardQueue(queueId)) return defaultResult
+                    throw HandledByService()
+                }
+
                 // FletchTunes: a song picked from the library or an artist's songs is the only
                 // song in the queue; the songs after it go to Autoplay.
                 MusicService.SONG -> {
-                    val songId = path.getOrNull(1) ?: return@future defaultResult
+                    val songId = path.getOrNull(1) ?: return defaultResult
                     val allSongs = database.songsByCreateDateAsc().first().map { it.toMediaItem() }
                     val index = allSongs.indexOfFirst { it.mediaId == songId }.takeIf { it != -1 } ?: 0
                     songOnlySessionQueue(allSongs, index, startPositionMs) ?: defaultResult
                 }
 
                 MusicService.ARTIST -> {
-                    val songId = path.getOrNull(2) ?: return@future defaultResult
-                    val artistId = path.getOrNull(1) ?: return@future defaultResult
+                    val songId = path.getOrNull(2) ?: return defaultResult
+                    val artistId = path.getOrNull(1) ?: return defaultResult
                     val songs = database.artistSongsByCreateDateAsc(artistId).first().map { it.toMediaItem() }
                     val index = songs.indexOfFirst { it.mediaId == songId }.takeIf { it != -1 } ?: 0
                     songOnlySessionQueue(songs, index, startPositionMs) ?: defaultResult
                 }
 
                 MusicService.ALBUM -> {
-                    val songId = path.getOrNull(2) ?: return@future defaultResult
-                    val albumId = path.getOrNull(1) ?: return@future defaultResult
-                    val albumWithSongs = database.albumWithSongs(albumId).first() ?: return@future defaultResult
+                    val songId = path.getOrNull(2) ?: return defaultResult
+                    val albumId = path.getOrNull(1) ?: return defaultResult
+                    val albumWithSongs = database.albumWithSongs(albumId).first() ?: return defaultResult
                     val songs = albumWithSongs.songs.map { it.toMediaItem() }
                     sessionQueue(
                         ListQueue(title = albumWithSongs.album.title, items = songs, sourceKey = "album:$albumId"),
@@ -687,8 +850,8 @@ constructor(
                 }
 
                 MusicService.PLAYLIST -> {
-                    val songId = path.getOrNull(2) ?: return@future defaultResult
-                    val playlistId = path.getOrNull(1) ?: return@future defaultResult
+                    val songId = path.getOrNull(2) ?: return defaultResult
+                    val playlistId = path.getOrNull(1) ?: return defaultResult
                     val songs = when (playlistId) {
                         PlaylistEntity.LIKED_PLAYLIST_ID -> database.likedSongs(SongSortType.CREATE_DATE, descending = true)
                         PlaylistEntity.DOWNLOADED_PLAYLIST_ID -> {
@@ -718,7 +881,7 @@ constructor(
                     // FletchTunes: the songs stay in playlist order and shuffle is turned on with
                     // one fixed order, starting on a random song.
                     if (songId == MusicService.SHUFFLE_ACTION) {
-                        if (items.isEmpty()) return@future defaultResult
+                        if (items.isEmpty()) return defaultResult
                         sessionQueue(queue, items, items.indices.random(), C.TIME_UNSET, shuffle = true)
                     } else {
                         sessionQueue(
@@ -731,8 +894,8 @@ constructor(
                 }
 
                 MusicService.YOUTUBE_PLAYLIST -> {
-                    val songId = path.getOrNull(2) ?: return@future defaultResult
-                    val playlistId = path.getOrNull(1) ?: return@future defaultResult
+                    val songId = path.getOrNull(2) ?: return defaultResult
+                    val playlistId = path.getOrNull(1) ?: return defaultResult
 
                     val songs = try {
                         YouTube.playlist(playlistId).getOrNull()?.songs?.map {
@@ -740,13 +903,13 @@ constructor(
                         } ?: emptyList()
                     } catch (e: Exception) {
                         reportException(e)
-                        return@future defaultResult
+                        return defaultResult
                     }
 
                     val queue = ListQueue(title = null, items = songs, sourceKey = "yt_playlist:$playlistId")
                     // Check if this is a shuffle action
                     if (songId == MusicService.SHUFFLE_ACTION) {
-                        if (songs.isEmpty()) return@future defaultResult
+                        if (songs.isEmpty()) return defaultResult
                         sessionQueue(queue, songs, songs.indices.random(), C.TIME_UNSET, shuffle = true)
                     } else {
                         sessionQueue(
@@ -759,33 +922,18 @@ constructor(
                 }
 
                 MusicService.SEARCH -> {
-                    val songId = path.getOrNull(2) ?: return@future defaultResult
-                    val searchQuery = path.getOrNull(1) ?: return@future defaultResult
+                    val songId = path.getOrNull(2) ?: return defaultResult
+                    val spokenQuery = path.getOrNull(1) ?: return defaultResult
 
-                    val isVoiceSearch = songId.isBlank() && searchQuery.isNotBlank()
+                    val isVoiceSearch = songId.isBlank() && spokenQuery.isNotBlank()
+                    var searchQuery = spokenQuery
 
                     if (isVoiceSearch) {
-                        //Search if the voiceQuery is about a local playlist and play only the songs in that playlist
-                        val localPlaylists = database.searchPlaylists(searchQuery).first()
-                        val exactLocalPlaylist = localPlaylists.firstOrNull {
-                            it.playlist.name.equals(searchQuery, ignoreCase = true)
-                        }
-                        if (exactLocalPlaylist != null) {
-                            val playlistSongs = database.playlistSongs(exactLocalPlaylist.playlist.id).first()
-                            if (playlistSongs.isNotEmpty()) {
-                                val items = playlistSongs.map { it.song.toMediaItem() }
-                                return@future sessionQueue(
-                                    ListQueue(
-                                        title = exactLocalPlaylist.playlist.name,
-                                        items = items,
-                                        sourceKey = "playlist:${exactLocalPlaylist.playlist.id}",
-                                    ),
-                                    items,
-                                    0,
-                                    C.TIME_UNSET,
-                                )
-                            }
-                        }
+                        // FletchTunes: a playlist, artist or album named by voice plays that
+                        // collection; anything else is a song search.
+                        val voice = VoiceQuery.parse(spokenQuery, voiceExtras)
+                        voiceCollection(voice, startPositionMs)?.let { return it }
+                        searchQuery = voice.name.ifBlank { spokenQuery }
                     }
 
                     val searchResults = mutableListOf<Song>()
@@ -830,20 +978,24 @@ constructor(
                     }
                     
                     if (searchResults.isEmpty()) {
-                        return@future defaultResult
+                        return defaultResult
                     }
 
                     val selectedSong =
                         if (isVoiceSearch) {    //Check if the voiceQuery is about a specific song
                             val snapshot: List<Song> =
                                 synchronized(searchResults) { searchResults.toList() }
+                            // FletchTunes: nothing in the results is a strong match, so play what
+                            // YouTube ranks first (the online results follow the local ones).
                             VoiceSearchMatcher.findBest(searchQuery, snapshot)
+                                ?: snapshot.getOrNull(allLocalSongs.size)
+                                ?: snapshot.firstOrNull()
                         } else {
                             searchResults.firstOrNull { it.id == songId }
                         }
 
                     if(context.dataStore.get(AutoRadioQueueKey, true)) {
-                        val radioQueue = YouTubeQueue.radio(selectedSong?.toMediaMetadata() ?: return@future defaultResult)
+                        val radioQueue = YouTubeQueue.radio(selectedSong?.toMediaMetadata() ?: return defaultResult)
                         val radioStatus = runCatching {
                             withContext(Dispatchers.IO) {
                                 radioQueue
@@ -856,7 +1008,7 @@ constructor(
                         if (radioStatus != null && radioStatus.items.isNotEmpty()) {
                             // FletchTunes: the queue gets only the song; the radio (and its
                             // further pages) go to Autoplay.
-                            return@future sessionQueue(
+                            return sessionQueue(
                                 radioQueue,
                                 radioStatus.items,
                                 radioStatus.items.indexOfFirst { it.mediaId == selectedSong.id }.coerceAtLeast(0),
@@ -867,7 +1019,7 @@ constructor(
                         }
                     }
 
-                    val items = listOf(selectedSong?.toMediaItem() ?: return@future defaultResult)
+                    val items = listOf(selectedSong?.toMediaItem() ?: return defaultResult)
                     sessionQueue(
                         ListQueue(
                             title = selectedSong.song.title,
@@ -883,6 +1035,75 @@ constructor(
                 else -> defaultResult
             }
         }
+
+    /**
+     * FletchTunes: a voice request for a playlist ("play my driving playlist"), an artist ("play
+     * artist Y", or a library artist's exact name) or an album. Null when it names none of them,
+     * so the caller falls back to a song search.
+     */
+    private suspend fun voiceCollection(voice: VoiceQuery, startPositionMs: Long): MediaItemsWithStartPosition? {
+        if (voice.name.isBlank()) return null
+        val kind = voice.kind
+        val strict = kind == VoiceQuery.Kind.ANY
+        val leaf = if (voice.shuffle) MusicService.SHUFFLE_ACTION else ""
+
+        if (kind == VoiceQuery.Kind.PLAYLIST || kind == VoiceQuery.Kind.ANY) {
+            val targets = mutableListOf<Pair<String, String>>()
+            listOf("Liked songs", "Liked", "My likes", "Favourites", "Favorites", context.getString(R.string.liked_songs))
+                .forEach { targets += it to "${MusicService.PLAYLIST}/${PlaylistEntity.LIKED_PLAYLIST_ID}" }
+            listOf("Downloads", "Downloaded", context.getString(R.string.downloaded_songs))
+                .forEach { targets += it to "${MusicService.PLAYLIST}/${PlaylistEntity.DOWNLOADED_PLAYLIST_ID}" }
+            targets += context.getString(R.string.discover_mix) to AA_DISCOVER_MIX
+            database.playlistsByCreateDateAsc().first().forEach {
+                targets += it.playlist.name to "${MusicService.PLAYLIST}/${it.playlist.id}"
+            }
+            VoiceNameMatcher.bestIndex(voice.name, targets.map { it.first }, strict)?.let { index ->
+                val target = targets[index].second
+                val mediaId =
+                    if (target == AA_DISCOVER_MIX) {
+                        DiscoverMix.playlistId(context)?.let { "${MusicService.YOUTUBE_PLAYLIST}/$it/$leaf" }
+                    } else {
+                        "$target/$leaf"
+                    }
+                if (mediaId != null) {
+                    val result = resolveMediaItems(listOf(MediaItem.Builder().setMediaId(mediaId).build()), 0, startPositionMs)
+                    if (result.mediaItems.isNotEmpty()) return result
+                }
+            }
+        }
+
+        if (kind == VoiceQuery.Kind.ARTIST || kind == VoiceQuery.Kind.ANY) {
+            val artists = database.artistsByCreateDateAsc().first()
+            val names = artists.map { ArtistNameAliases.resolve(it.id, it.artist.name) }
+            VoiceNameMatcher.bestIndex(voice.name, names, strict)?.let { index ->
+                val artist = artists[index]
+                val items = database.artistSongsByCreateDateAsc(artist.id).first().map { it.toMediaItem() }
+                if (items.isNotEmpty()) {
+                    // An artist always plays shuffled; in creation order it would start on the same song every time.
+                    return sessionQueue(
+                        ListQueue(title = names[index], items = items, sourceKey = "artist:${artist.id}"),
+                        items,
+                        items.indices.random(),
+                        C.TIME_UNSET,
+                        shuffle = true,
+                    )
+                }
+            }
+        }
+
+        if (kind == VoiceQuery.Kind.ALBUM) {
+            val albums = database.searchAlbums(voice.name).first()
+            VoiceNameMatcher.bestIndex(voice.name, albums.map { it.album.title }, strict = false)?.let { index ->
+                val result = resolveMediaItems(
+                    listOf(MediaItem.Builder().setMediaId("${MusicService.ALBUM}/${albums[index].id}/").build()),
+                    0,
+                    startPositionMs,
+                )
+                if (result.mediaItems.isNotEmpty()) return result
+            }
+        }
+        return null
+    }
 
     /**
      * FletchTunes: tells MusicService what the session is about to play (so it gets its own
@@ -979,8 +1200,35 @@ constructor(
     }
 }
 
+/** FletchTunes browse-tree nodes, kept here rather than in MusicService. */
+internal const val AA_QUEUES = "queues"
+internal const val AA_DISCOVER_MIX = "discover_mix"
+
+/** Discover Mix, Liked songs and Downloaded songs lead the Playlists list. */
+internal const val PLAYLIST_BUILT_IN_COUNT = 3
+
+/** How long a "play" with nothing loaded waits for MusicService's own queue restore. */
+private const val RESTORE_WAIT_MS = 3_000L
+
+/**
+ * Thrown from a session callback when MusicService has already started the playback itself
+ * (a QueueBoard queue resumes through playQueue() to keep its row and shuffle order). Media3
+ * then leaves the player alone: a failed onSetMediaItems is ignored for car/legacy controllers,
+ * and a failed onPlaybackResumption just presses play.
+ */
+internal class HandledByService : Exception("Playback started by MusicService")
+
+/** The root sections the car shows, in order. Liked songs when every section is switched off. */
+internal fun androidAutoRootSections(raw: String): List<AndroidAutoSection> =
+    deserializeSections(raw)
+        .filter { (_, enabled) -> enabled }
+        .map { it.first }
+        .ifEmpty { listOf(AndroidAutoSection.LIKED) }
+
 internal fun isBrowsableMediaId(mediaId: String): Boolean =
     mediaId == MusicService.ROOT ||
+        mediaId == AA_QUEUES ||
+        mediaId == AA_DISCOVER_MIX ||
         mediaId == MusicService.SONG ||
         mediaId == MusicService.ARTIST ||
         mediaId == MusicService.ALBUM ||

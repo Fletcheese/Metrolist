@@ -1759,6 +1759,15 @@ class MusicService :
                     .setSessionCommand(CommandToggleLike)
                     .setEnabled(currentSong.value != null)
                     .build(),
+                // FletchTunes: Android Auto shows the first custom actions on the bar and the rest
+                // under its overflow, so shuffle, like and start radio come first.
+                CommandButton
+                    .Builder()
+                    .setDisplayName(getString(R.string.start_radio))
+                    .setIconResId(R.drawable.radio)
+                    .setSessionCommand(CommandToggleStartRadio)
+                    .setEnabled(currentSong.value != null)
+                    .build(),
                 CommandButton
                     .Builder()
                     .setDisplayName(
@@ -1778,13 +1787,6 @@ class MusicService :
                             else -> throw IllegalStateException()
                         },
                     ).setSessionCommand(CommandToggleRepeatMode)
-                    .build(),
-                CommandButton
-                    .Builder()
-                    .setDisplayName(getString(R.string.start_radio))
-                    .setIconResId(R.drawable.radio)
-                    .setSessionCommand(CommandToggleStartRadio)
-                    .setEnabled(currentSong.value != null)
                     .build(),
                 CommandButton
                     .Builder()

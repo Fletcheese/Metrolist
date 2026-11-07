@@ -5,6 +5,10 @@
 
 package com.metrolist.music.playback
 
+import com.metrolist.music.ui.screens.settings.AndroidAutoSection
+import com.metrolist.music.ui.screens.settings.DefaultAndroidAutoSectionsRaw
+import com.metrolist.music.ui.screens.settings.deserializeSections
+import com.metrolist.music.ui.screens.settings.serializeSections
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -19,6 +23,40 @@ class MediaLibrarySessionCallbackTest {
         assertTrue(isBrowsableMediaId("${MusicService.PLAYLIST}/playlist-id"))
         assertFalse(isBrowsableMediaId("unknown"))
         assertFalse(isBrowsableMediaId("${MusicService.SONG}/song-id"))
+    }
+
+    @Test
+    fun `car opens on queues, playlists and liked songs by default`() {
+        assertEquals(
+            listOf(AndroidAutoSection.QUEUES, AndroidAutoSection.PLAYLISTS, AndroidAutoSection.LIKED),
+            androidAutoRootSections(DefaultAndroidAutoSectionsRaw),
+        )
+        assertEquals(androidAutoRootSections(DefaultAndroidAutoSectionsRaw), androidAutoRootSections(""))
+    }
+
+    @Test
+    fun `a saved order keeps its sections and gains queues first`() {
+        val saved = "playlists:true,liked:true,songs:false,artists:true,albums:false"
+        assertEquals(
+            listOf(AndroidAutoSection.QUEUES, AndroidAutoSection.PLAYLISTS, AndroidAutoSection.LIKED, AndroidAutoSection.ARTISTS),
+            androidAutoRootSections(saved),
+        )
+        assertEquals(AndroidAutoSection.values().size, deserializeSections(saved).size)
+    }
+
+    @Test
+    fun `every section switched off still shows liked songs`() {
+        assertEquals(
+            listOf(AndroidAutoSection.LIKED),
+            androidAutoRootSections(serializeSections(AndroidAutoSection.values().map { it to false })),
+        )
+    }
+
+    @Test
+    fun `new browse nodes accept subscriptions`() {
+        assertTrue(isBrowsableMediaId(AA_QUEUES))
+        assertTrue(isBrowsableMediaId(AA_DISCOVER_MIX))
+        assertFalse(isBrowsableMediaId("$AA_QUEUES/queue-id"))
     }
 
     @Test
