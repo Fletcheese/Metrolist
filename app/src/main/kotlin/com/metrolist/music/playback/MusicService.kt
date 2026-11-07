@@ -1369,13 +1369,19 @@ class MusicService :
         }
 
         scope.launch {
+            var ticks = 0
             while (isActive) {
                 delay(15.seconds)
+                ticks++
                 if (cachedPersistentQueue) {
                     savePlayerStateToDisk()
                 }
+                // The episode position is a write to the song table, which re-runs every Room
+                // query that reads songs (the library view models keep theirs live). Pause and
+                // episode changes already save it, so this is only a crash safety net: once a
+                // minute rather than every 15 s.
                 val currentMetadata = player.currentMediaItem?.metadata
-                if (currentMetadata?.isEpisode == true && player.isPlaying && player.currentPosition > 0) {
+                if (ticks % 4 == 0 && currentMetadata?.isEpisode == true && player.isPlaying && player.currentPosition > 0) {
                     previousEpisodePosition = player.currentPosition
                     saveEpisodePosition(currentMetadata.id, player.currentPosition)
                 }
