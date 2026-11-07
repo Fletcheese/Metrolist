@@ -13,6 +13,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -28,7 +29,7 @@ class PlaybackRegistrationTest {
         }
         client(engine).use { client ->
             val api = InnerTube(client).apply { cookie = "SAPISID=test-session" }
-            assertTrue(api.registerPlayback("song", "first-play"))
+            assertNotNull(api.registerPlayback("song", "first-play"))
             api.registerPlayback("song", "second-play")
             assertEquals(
                 listOf("/youtubei/v1/player", "/api/stats/playback", "/youtubei/v1/player", "/api/stats/playback"),
@@ -49,12 +50,12 @@ class PlaybackRegistrationTest {
         }
         client(engine).use { client ->
             val api = InnerTube(client)
-            assertFalse(api.registerPlayback("song", "nonce"))
+            assertNull(api.registerPlayback("song", "nonce"))
             api.cookie = "SAPISID=test-session"
-            assertFalse(api.registerPlayback("song", "nonce") { enabled })
+            assertNull(api.registerPlayback("song", "nonce") { enabled })
             assertTrue(engine.requestHistory.isEmpty())
             enabled = true
-            assertFalse(api.registerPlayback("song", "nonce") { enabled })
+            assertNull(api.registerPlayback("song", "nonce") { enabled })
             assertEquals(1, engine.requestHistory.size)
         }
     }
@@ -93,6 +94,41 @@ class PlaybackRegistrationTest {
                 assertTrue(url, result.exceptionOrNull() is IllegalArgumentException)
                 assertEquals(1, engine.requestHistory.size)
             }
+        }
+    }
+
+    @Test
+    fun watchtimeUsesTheSameNonceAndCarriesProgress() = runBlocking {
+        val body =
+            """{"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"ep","lengthSeconds":"600"},""" +
+                """"playbackTracking":{"videostatsPlaybackUrl":{"baseUrl":"https://s.youtube.com/api/stats/playback?docid=ep"},""" +
+                """"videostatsWatchtimeUrl":{"baseUrl":"https://s.youtube.com/api/stats/watchtime?docid=ep&ei=x"},""" +
+                """"videostatsDefaultFlushIntervalSeconds":40}}"""
+        val engine = MockEngine { request ->
+            if (request.url.encodedPath.endsWith("/player")) {
+                respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+            } else {
+                respond("", status = io.ktor.http.HttpStatusCode.NoContent)
+            }
+        }
+        client(engine).use { client ->
+            val api = InnerTube(client).apply { cookie = "SAPISID=test-session" }
+            val session = checkNotNull(api.registerPlayback("ep", "nonce-1"))
+            assertEquals(40_000L, session.flushIntervalMs)
+            assertTrue(session.sendWatchtime(listOf(0.0 to 45.5, 50.0 to 60.0), 60.0, 70.0, playing = false, final = true))
+            val ping = engine.requestHistory.last().url
+            assertEquals("/api/stats/watchtime", ping.encodedPath)
+            assertEquals("nonce-1", ping.parameters["cpn"])
+            assertEquals("0.000,50.000", ping.parameters["st"])
+            assertEquals("45.500,60.000", ping.parameters["et"])
+            assertEquals("60.000", ping.parameters["cmt"])
+            assertEquals("1", ping.parameters["final"])
+            assertEquals("paused", ping.parameters["state"])
+            assertEquals("600", ping.parameters["len"])
+            assertEquals("ep", ping.parameters["docid"])
+            assertNotNull(engine.requestHistory.last().headers[HttpHeaders.Authorization])
+            api.cookie = "SAPISID=another-session"
+            assertFalse(session.sendWatchtime(listOf(60.0 to 70.0), 70.0, 80.0, playing = true, final = false))
         }
     }
 

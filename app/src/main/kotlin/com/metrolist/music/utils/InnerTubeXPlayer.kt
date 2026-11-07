@@ -45,6 +45,8 @@ object InnerTubeXPlayer {
 
     private val bundleMutex = Mutex()
     private val streamClientFailures = java.util.concurrent.ConcurrentHashMap<String, FailedStreamClients>()
+    private const val PUBLISHER_AUDIO_CLIENT = "WEB_REMIX_PUBLISHER"
+    private val publisherAudioVideoIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     @Synchronized
     fun initialize(context: Context) {
@@ -60,8 +62,9 @@ object InnerTubeXPlayer {
         connectivityManager: ConnectivityManager,
         contentHints: ContentHints = ContentHints(),
         allowBoundedRange: Boolean = true,
-    ): Result<PlaybackData> =
-        try {
+    ): Result<PlaybackData> {
+        if (videoId in publisherAudioVideoIds) publisherAudioPlayback(videoId)?.let { return Result.success(it) }
+        return try {
             val hints =
                 contentHints.copy(
                     isUploaded =
@@ -90,22 +93,87 @@ object InnerTubeXPlayer {
             throw error
         } catch (error: StreamResolveException) {
             val cause = error.cause
-            Result.failure(
-                if (error.reason == StreamResolveException.Reason.NETWORK && cause != null) {
-                    cause
-                } else {
-                    error
-                },
-            )
+            if (error.reason == StreamResolveException.Reason.NETWORK && cause != null) {
+                Result.failure(cause)
+            } else {
+                publisherAudioPlayback(videoId)
+                    ?.also { publisherAudioVideoIds += videoId }
+                    ?.let { Result.success(it) }
+                    ?: Result.failure(error)
+            }
         } catch (error: Exception) {
             Result.failure(error)
         }
+    }
+
+    /**
+     * RSS-imported podcast episodes are served from the publisher's host, which stream extraction
+     * rejects as non-googlevideo media. The signed-in WEB_REMIX response still names that file.
+     */
+    private suspend fun publisherAudioPlayback(videoId: String): PlaybackData? {
+        val audio =
+            YouTube
+                .publisherAudio(videoId)
+                .onFailure { Timber.tag(TAG).w(it, "publisher audio lookup failed for $videoId") }
+                .getOrNull()
+                ?: return null
+        Timber.tag(TAG).i(
+            "publisher audio selected for $videoId [host=${android.net.Uri.parse(audio.url).host}, mime=${audio.mimeType}]",
+        )
+        return PlaybackData(
+            audioConfig =
+                if (audio.loudnessDb != null || audio.perceptualLoudnessDb != null) {
+                    PlayerResponse.PlayerConfig.AudioConfig(audio.loudnessDb, audio.perceptualLoudnessDb)
+                } else {
+                    null
+                },
+            videoDetails = null,
+            playbackTracking =
+                PlayerResponse.PlaybackTracking(
+                    videostatsPlaybackUrl = audio.playbackUrl?.let(PlayerResponse.PlaybackTracking::VideostatsPlaybackUrl),
+                    videostatsWatchtimeUrl = audio.watchtimeUrl?.let(PlayerResponse.PlaybackTracking::VideostatsWatchtimeUrl),
+                    atrUrl = null,
+                ),
+            format =
+                PlayerResponse.StreamingData.Format(
+                    itag = audio.itag,
+                    url = audio.url,
+                    mimeType = audio.mimeType,
+                    bitrate = audio.bitrate ?: 0,
+                    width = null,
+                    height = null,
+                    contentLength = audio.contentLength,
+                    quality = "",
+                    fps = null,
+                    qualityLabel = null,
+                    averageBitrate = audio.bitrate,
+                    audioQuality = null,
+                    approxDurationMs = audio.durationSeconds?.times(1000)?.toString(),
+                    audioSampleRate = null,
+                    audioChannels = null,
+                    loudnessDb = audio.loudnessDb,
+                    lastModified = null,
+                    signatureCipher = null,
+                    cipher = null,
+                    audioTrack = null,
+                ),
+            streamUrl = audio.url,
+            streamExpiresInSeconds = audio.expiresInSeconds?.coerceAtLeast(1) ?: DEFAULT_STREAM_TTL_SECONDS,
+            streamClient = PUBLISHER_AUDIO_CLIENT,
+            // No YouTube headers or cookies go to the publisher's host.
+            streamHeaders = emptyMap(),
+            requireBoundedRange = false,
+            rangeChunkSizeBytes = 1_024L * 1_024L,
+            useRangeChunks = false,
+        )
+    }
 
     internal fun markStreamClientFailed(
         videoId: String,
         clientName: String,
         nowMs: Long = System.currentTimeMillis(),
     ) {
+        if (clientName == PUBLISHER_AUDIO_CLIENT) publisherAudioVideoIds -= videoId
         streamClientFailures.compute(videoId) { _, failures ->
             FailedStreamClients(failures?.clientNames.orEmpty() + clientName, nowMs)
         }

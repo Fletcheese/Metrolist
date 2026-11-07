@@ -37,6 +37,9 @@ import java.io.InputStream
 import java.net.Proxy
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import timber.log.Timber
+
+private const val STATS_TAG = "YTStats"
 
 /**
  * Compatibility facade that keeps Metrolist's parsed response models while InnerTubeX owns
@@ -213,10 +216,10 @@ class InnerTube(
         videoId: String,
         cpn: String,
         isHistoryEnabled: () -> Boolean = { true },
-    ): Boolean {
+    ): WatchtimeSession? {
         val transport = innerTubeX
         val session = transport.sessionSnapshot()
-        if (session.cookie.isNullOrBlank() || !isHistoryEnabled()) return false
+        if (session.cookie.isNullOrBlank() || !isHistoryEnabled()) return null
         // Streaming clients and cached downloads may not carry account-bound tracking URLs.
         val response = transport.playerWithSessionBound(
             client = YouTubeClient.WEB_REMIX,
@@ -227,20 +230,153 @@ class InnerTube(
             requestVisitorData = null,
             requestSession = session,
         ).requireSuccess("playbackTracking").body<PlayerResponse>()
-        val trackingUrl = requireNotNull(response.playbackTracking?.videostatsPlaybackUrl?.baseUrl) {
-            "No playback tracking URL returned"
+        val trackingUrl = checkNotNull(response.playbackTracking?.videostatsPlaybackUrl?.baseUrl) {
+            "No playback tracking URL for $videoId (playability=${response.playabilityStatus.status})"
         }
         require(Url(trackingUrl).encodedPath == "/api/stats/playback") { "Invalid playback tracking URL" }
-        if (transport !== innerTubeX || transport.sessionSnapshot() != session || !isHistoryEnabled()) return false
-        transport.registerPlaybackWithSession(
+        if (transport !== innerTubeX || transport.sessionSnapshot() != session || !isHistoryEnabled()) return null
+        val status = transport.registerPlaybackWithSession(
             client = YouTubeClient.WEB_REMIX,
             url = trackingUrl,
             cpn = cpn,
             playlistId = null,
             requestSession = session,
-        ).requireSuccess("registerPlayback")
-        return true
+        ).requireSuccess("registerPlayback").status.value
+        Timber.tag(STATS_TAG).i("playback ping $videoId HTTP $status")
+        val watchtimeUrl =
+            response.playbackTracking?.videostatsWatchtimeUrl?.baseUrl
+                ?.takeIf { runCatching { Url(it).encodedPath == "/api/stats/watchtime" }.getOrDefault(false) }
+        if (watchtimeUrl == null) Timber.tag(STATS_TAG).w("no watchtime URL for $videoId")
+        return WatchtimeSession(
+            videoId = videoId,
+            cpn = cpn,
+            watchtimeUrl = watchtimeUrl,
+            lengthSeconds = response.videoDetails?.lengthSeconds?.toLongOrNull(),
+            flushIntervalSeconds = response.playbackTracking?.videostatsDefaultFlushIntervalSeconds,
+            transport = transport,
+            session = session,
+            isHistoryEnabled = isHistoryEnabled,
+        )
     }
+
+    /**
+     * Watch-time reporting bound to the player response and nonce of one playback ping, so YouTube
+     * records progress and completion against the same listen.
+     */
+    inner class WatchtimeSession internal constructor(
+        val videoId: String,
+        private val cpn: String,
+        private val watchtimeUrl: String?,
+        private val lengthSeconds: Long?,
+        flushIntervalSeconds: Int?,
+        private val transport: InnerTubeX,
+        private val session: InnerTubeX.SessionSnapshot,
+        private val isHistoryEnabled: () -> Boolean,
+    ) {
+        val flushIntervalMs: Long = (flushIntervalSeconds ?: 40).coerceIn(10, 120) * 1000L
+        val hasWatchtime: Boolean get() = watchtimeUrl != null
+
+        /** Segments are media-time [start, end] pairs in seconds; returns false when nothing was sent. */
+        suspend fun sendWatchtime(
+            segments: List<Pair<Double, Double>>,
+            currentMediaSeconds: Double,
+            realTimeSeconds: Double,
+            playing: Boolean,
+            final: Boolean,
+        ): Boolean {
+            val baseUrl = watchtimeUrl ?: return false
+            if (segments.isEmpty() || transport.sessionSnapshot() != session || !isHistoryEnabled()) return false
+            val url =
+                buildString {
+                    append(baseUrl)
+                    val query = Url(baseUrl).parameters
+                    if (lengthSeconds != null && !query.contains("len")) append("&len=").append(lengthSeconds)
+                    if (!query.contains("state")) append("&state=").append(if (playing) "playing" else "paused")
+                }
+            val status = transport.registerWatchtimeWithSession(
+                client = YouTubeClient.WEB_REMIX,
+                url = url,
+                cpn = cpn,
+                startTimes = segments.joinToString(",") { secs(it.first) },
+                endTimes = segments.joinToString(",") { secs(it.second) },
+                currentMediaTime = secs(currentMediaSeconds),
+                realTime = secs(realTimeSeconds),
+                final = final,
+                format = null,
+                requestSession = session,
+            ).requireSuccess("registerWatchtime").status.value
+            Timber.tag(STATS_TAG).i(
+                "watchtime ping $videoId HTTP $status cmt=${secs(currentMediaSeconds)} segments=${segments.size} " +
+                    "playing=$playing final=$final",
+            )
+            return true
+        }
+
+        private fun secs(value: Double) = String.format(Locale.US, "%.3f", value.coerceAtLeast(0.0))
+    }
+
+    /**
+     * Listen-only podcast episodes imported from RSS can answer the signed-in player request with the
+     * publisher's own audio file instead of googlevideo media, which stream extraction rejects.
+     */
+    suspend fun publisherAudio(videoId: String): PublisherAudio? {
+        val transport = innerTubeX
+        val session = transport.sessionSnapshot()
+        if (session.cookie.isNullOrBlank()) return null
+        val response = transport.playerWithSessionBound(
+            client = YouTubeClient.WEB_REMIX,
+            videoId = videoId,
+            playlistId = null,
+            signatureTimestamp = null,
+            poToken = null,
+            requestVisitorData = null,
+            requestSession = session,
+        ).requireSuccess("publisherAudio").body<PlayerResponse>()
+        val streamingData = response.streamingData
+        val formats = streamingData?.formats.orEmpty() + streamingData?.adaptiveFormats.orEmpty()
+        Timber.tag(STATS_TAG).i(
+            "publisher audio probe $videoId playability=${response.playabilityStatus.status} " +
+                "sabr=${streamingData?.serverAbrStreamingUrl != null} hls=${streamingData?.hlsManifestUrl != null} formats=" +
+                formats.joinToString { f ->
+                    val host = f.url?.let { runCatching { Url(it).host }.getOrNull() } ?: if (f.signatureCipher != null) "cipher" else "none"
+                    "${f.itag}:${f.mimeType.substringBefore(';')}:w=${f.width}:$host"
+                },
+        )
+        val format =
+            formats.firstOrNull { f ->
+                val url = f.url?.let { runCatching { Url(it) }.getOrNull() } ?: return@firstOrNull false
+                f.width == null && f.mimeType.startsWith("audio/", ignoreCase = true) &&
+                    url.protocol.name == "https" && url.user == null &&
+                    url.host != "googlevideo.com" && !url.host.endsWith(".googlevideo.com")
+            } ?: return null
+        return PublisherAudio(
+            url = checkNotNull(format.url),
+            mimeType = format.mimeType,
+            itag = format.itag,
+            bitrate = format.bitrate,
+            contentLength = format.contentLength,
+            durationSeconds = response.videoDetails?.lengthSeconds?.toLongOrNull(),
+            loudnessDb = response.playerConfig?.audioConfig?.loudnessDb,
+            perceptualLoudnessDb = response.playerConfig?.audioConfig?.perceptualLoudnessDb,
+            playbackUrl = response.playbackTracking?.videostatsPlaybackUrl?.baseUrl,
+            watchtimeUrl = response.playbackTracking?.videostatsWatchtimeUrl?.baseUrl,
+            expiresInSeconds = streamingData?.expiresInSeconds,
+        )
+    }
+
+    class PublisherAudio(
+        val url: String,
+        val mimeType: String,
+        val itag: Int,
+        val bitrate: Int?,
+        val contentLength: Long?,
+        val durationSeconds: Long?,
+        val loudnessDb: Double?,
+        val perceptualLoudnessDb: Double?,
+        val playbackUrl: String?,
+        val watchtimeUrl: String?,
+        val expiresInSeconds: Int?,
+    )
 
     suspend fun browse(
         client: YouTubeClient,

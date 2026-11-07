@@ -2880,6 +2880,10 @@ object YouTube {
         if (it is CancellationException) throw it
     }
 
+    suspend fun publisherAudio(videoId: String) =
+        runCatching { innerTube.publisherAudio(videoId) }
+            .onFailure { if (it is CancellationException) throw it }
+
     suspend fun next(
         endpoint: WatchEndpoint,
         continuation: String? = null,

@@ -95,6 +95,7 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionToken
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.MoreExecutors
+import com.metrolist.innertube.InnerTube
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.WatchEndpoint
@@ -1385,6 +1386,7 @@ class MusicService :
                     previousEpisodePosition = player.currentPosition
                     saveEpisodePosition(currentMetadata.id, player.currentPosition)
                 }
+                historyReporters.values.forEach { it.onPlaybackTick() }
             }
         }
 
@@ -1490,8 +1492,9 @@ class MusicService :
                         YouTube.registerPlayback(videoId, nonce) {
                             !dataStore.get(PauseListenHistoryKey, false) &&
                                 account == Triple(YouTube.cookie, YouTube.dataSyncId, YouTube.authUser)
-                        }.onFailure { reportException(it) }
-                            .getOrDefault(false)
+                        }.onFailure { Timber.tag(TAG).w(it, "Playback ping failed for $videoId") }
+                            .getOrNull()
+                            ?.let(::watchtimeSink)
                     }
                 }
             },
@@ -2998,6 +3001,27 @@ class MusicService :
     // naturally (and is therefore safe to mark as fully cached).
     private var lastTransitionedMediaId: String? = null
     private var previousEpisodePosition: Long = 0L
+
+    private fun watchtimeSink(session: InnerTube.WatchtimeSession) =
+        object : WatchtimeSink {
+            override val flushIntervalMs = session.flushIntervalMs
+
+            override suspend fun send(
+                segments: List<Pair<Double, Double>>,
+                currentMediaSeconds: Double,
+                realTimeSeconds: Double,
+                playing: Boolean,
+                final: Boolean,
+            ): Boolean =
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        session.sendWatchtime(segments, currentMediaSeconds, realTimeSeconds, playing, final)
+                    }.onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        Timber.tag(TAG).w(it, "Watchtime ping failed for ${session.videoId}")
+                    }.getOrDefault(false)
+                }
+        }
 
     /**
      * Save podcast episode playback position to database.

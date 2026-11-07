@@ -207,6 +207,53 @@ class YouTubeHistoryReporterTest {
         assertEquals(listOf("song"), second.reports)
     }
 
+    @Test
+    fun `watch time rides the playback tick, flushes on pause and ends with a final ping`() = playback().run {
+        playingChanged(true)
+        advance(30_000)
+        assertEquals(listOf("song"), reports)
+        position = 30_000
+        reporter.onPlaybackTick()
+        assertTrue(watchtime.isEmpty())
+        advance(15_000)
+        position = 45_000
+        reporter.onPlaybackTick()
+        assertEquals(listOf("0.0-45.0|cmt=45.0|playing=true|final=false"), watchtime)
+        advance(5_000)
+        position = 50_000
+        playWhenReady = false
+        playingChanged(false)
+        event(AnalyticsListener.EVENT_PLAY_WHEN_READY_CHANGED)
+        reporter.onPlaybackTick()
+        advance(60_000)
+        assertEquals("45.0-50.0|cmt=50.0|playing=false|final=false", watchtime.last())
+        assertEquals(2, watchtime.size)
+        release()
+        advance(1)
+        assertEquals(listOf("song"), reports)
+        assertEquals("50.0-50.0|cmt=50.0|playing=false|final=true", watchtime.last())
+        assertEquals(3, watchtime.size)
+    }
+
+    @Test
+    fun `seeks split watch time segments and a skipped item reports before the threshold is not sent`() = playback().run {
+        playingChanged(true)
+        advance(30_000)
+        position = 30_000
+        seek(100_000)
+        advance(20_000)
+        position = 120_000
+        reporter.onPlaybackTick()
+        assertEquals(listOf("0.0-30.0,100.0-120.0|cmt=120.0|playing=true|final=false"), watchtime)
+        position = 150_000
+        next("second")
+        advance(10_000)
+        release()
+        advance(1)
+        assertEquals("120.0-150.0|cmt=150.0|playing=false|final=true", watchtime.last())
+        assertEquals(listOf("song"), reports)
+    }
+
     private fun playback(id: String = "song") = Playback(id).also {
         fixtures += it
         it.event(AnalyticsListener.EVENT_TIMELINE_CHANGED)
@@ -232,6 +279,22 @@ class YouTubeHistoryReporterTest {
         var created = 0
         val reports = mutableListOf<String>()
         val reportIds = mutableListOf<Int>()
+        val watchtime = mutableListOf<String>()
+        val sink = object : WatchtimeSink {
+            override val flushIntervalMs = 40_000L
+
+            override suspend fun send(
+                segments: List<Pair<Double, Double>>,
+                currentMediaSeconds: Double,
+                realTimeSeconds: Double,
+                playing: Boolean,
+                final: Boolean,
+            ): Boolean {
+                watchtime += segments.joinToString(",") { "${it.first}-${it.second}" } +
+                    "|cmt=$currentMediaSeconds|playing=$playing|final=$final"
+                return true
+            }
+        }
         val player = Proxy.newProxyInstance(Player::class.java.classLoader, arrayOf(Player::class.java)) { _, method, _ ->
             when (method.name) {
                 "getApplicationLooper" -> Looper.getMainLooper()
@@ -243,6 +306,7 @@ class YouTubeHistoryReporterTest {
                 "getPlayerError" -> null
                 "getCurrentTracks" -> Tracks.EMPTY
                 "getPlaybackParameters" -> PlaybackParameters(speed)
+                "getCurrentPosition" -> position
                 else -> error("Unexpected player call: ${method.name}")
             }
         } as Player
@@ -250,10 +314,10 @@ class YouTubeHistoryReporterTest {
             player, scope, { threshold }, { enabled },
             createReport = { videoId ->
                 val reportId = ++created
-                val report: suspend () -> Boolean = {
+                val report: suspend () -> WatchtimeSink? = {
                     reports += videoId
                     reportIds += reportId
-                    gate?.await() ?: result
+                    if (gate?.await() ?: result) sink else null
                 }
                 report
             },
@@ -304,5 +368,7 @@ class YouTubeHistoryReporterTest {
         }
 
         fun release() = event(AnalyticsListener.EVENT_PLAYER_RELEASED)
+
+        fun playingChanged(isPlaying: Boolean) = listeners.forEach { it.onIsPlayingChanged(time(), isPlaying) }
     }
 }
