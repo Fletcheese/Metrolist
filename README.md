@@ -31,8 +31,8 @@
 </div>
 
 > [!NOTE]
-> **This is Fletch's personal fork**, rebranded "FletchTunes" with a few personal UX tweaks (see [CLAUDE.md](CLAUDE.md)
-> for what's changed and why). The badges, download links, translations, and support/donation info below all point at
+> **This is Fletch's personal fork**, rebranded "FletchTunes": parallel queues, a scaled-down app, offline mode,
+> Android Auto and podcast fixes, and battery work. **[FORK.md](FORK.md) says what's changed and where it stands.** The badges, download links, translations, and support/donation info below all point at
 > the **upstream Metrolist project** — this fork isn't published anywhere and doesn't need any of its own.
 
 > [!WARNING]
