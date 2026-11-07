@@ -90,6 +90,7 @@ import com.metrolist.music.ui.menu.SongMenu
 import com.metrolist.music.ui.utils.isScrollingUp
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
+import com.metrolist.music.utils.rememberIsOnline
 import com.metrolist.music.viewmodels.LibrarySongsViewModel
 import timber.log.Timber
 import kotlinx.coroutines.CancellationException
@@ -133,7 +134,10 @@ fun LibrarySongsScreen(
     val debouncedSearchQuery by viewModel.debouncedSearchQuery.collectAsStateWithLifecycle()
     val normalizedQuery = remember(debouncedSearchQuery) { debouncedSearchQuery.normalizeForSearch() }
 
-    var filter by rememberEnumPreference(SongFilterKey, SongFilter.LIKED)
+    var savedFilter by rememberEnumPreference(SongFilterKey, SongFilter.LIKED)
+    // Offline the list is the Downloaded filter (see LibrarySongsViewModel); show that chip.
+    val isOnline = rememberIsOnline()
+    val filter = if (isOnline) savedFilter else SongFilter.DOWNLOADED
 
     // Upload state
     var showUploadDialog by remember { mutableStateOf(false) }
@@ -357,7 +361,7 @@ fun LibrarySongsScreen(
                             ),
                         currentValue = filter,
                         onValueUpdate = {
-                            filter = it
+                            savedFilter = it
                         },
                         modifier = Modifier.weight(1f),
                     )

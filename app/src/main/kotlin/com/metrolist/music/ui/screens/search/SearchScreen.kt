@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -68,6 +69,8 @@ import com.metrolist.music.ui.component.HideOnScrollFAB
 import com.metrolist.music.utils.SearchRoutes
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
+import com.metrolist.music.utils.rememberIsOnline
+import com.metrolist.music.ui.component.OfflineBanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -125,6 +128,9 @@ fun SearchScreen(
     }
 
     var searchSource by rememberEnumPreference(SearchSourceKey, SearchSource.ONLINE)
+    // FletchTunes offline mode: online search can't work, so search the library on the phone
+    // instead and say so, rather than letting YouTube Music requests fail.
+    val isOnline = rememberIsOnline()
     var query by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue())
     }
@@ -159,7 +165,8 @@ fun SearchScreen(
             }
 
             null -> {
-                navController.navigate(SearchRoutes.resultRoute(searchQuery))
+                // Offline, the local results below already match as you type.
+                if (isOnline) navController.navigate(SearchRoutes.resultRoute(searchQuery))
             }
         }
 
@@ -285,13 +292,16 @@ fun SearchScreen(
                     .padding(top = paddingValues.calculateTopPadding())
                     .fillMaxSize(),
         ) {
-            when (searchSource) {
+            when (if (isOnline) searchSource else SearchSource.LOCAL) {
                 SearchSource.LOCAL -> {
-                    LocalSearchScreen(
-                        query = query.text,
-                        onDismiss = { navController.navigateUp() },
-                        pureBlack = pureBlack,
-                    )
+                    Column {
+                        if (!isOnline) OfflineBanner(text = stringResource(R.string.offline_search))
+                        LocalSearchScreen(
+                            query = query.text,
+                            onDismiss = { navController.navigateUp() },
+                            pureBlack = pureBlack,
+                        )
+                    }
                 }
 
                 SearchSource.ONLINE -> {

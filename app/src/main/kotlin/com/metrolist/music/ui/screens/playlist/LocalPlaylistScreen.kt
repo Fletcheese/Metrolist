@@ -142,6 +142,7 @@ import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.makeTimeString
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
+import com.metrolist.music.utils.rememberIsOnline
 import com.metrolist.music.utils.reportException
 import com.metrolist.music.viewmodels.LocalPlaylistViewModel
 import com.yalantis.ucrop.UCrop
@@ -170,7 +171,14 @@ fun LocalPlaylistScreen(
     val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
 
     val playlist by viewModel.playlist.collectAsStateWithLifecycle()
-    val songs by viewModel.playlistSongs.collectAsStateWithLifecycle()
+    val allSongs by viewModel.playlistSongs.collectAsStateWithLifecycle()
+    // FletchTunes offline mode: list (and play) only the downloaded songs, live as the network
+    // drops and returns. Filtered here, not in the ViewModel, whose init renumbers positions
+    // from the full list.
+    val isOnline = rememberIsOnline()
+    val songs = remember(allSongs, isOnline) {
+        if (isOnline) allSongs else allSongs.filter { it.song.song.isDownloaded }
+    }
     val onlinePlaylist by viewModel.onlinePlaylist.collectAsStateWithLifecycle()
     val mutableSongs = remember { mutableStateListOf<PlaylistSong>() }
     val playlistLength =
@@ -188,6 +196,8 @@ fun LocalPlaylistScreen(
             true,
         )
     var locked by rememberPreference(PlaylistEditLockKey, defaultValue = true)
+    // Reordering a filtered (offline) list would scramble positions, so offline stays locked.
+    val editLocked = locked || !isOnline
 
     val coroutineScope = rememberCoroutineScope()
     val syncUtils = LocalSyncUtils.current
@@ -534,7 +544,7 @@ fun LocalPlaylistScreen(
                                     modifier = Modifier.padding(horizontal = 6.dp),
                                 ) {
                                     Icon(
-                                        painter = painterResource(if (locked) R.drawable.lock else R.drawable.lock_open),
+                                        painter = painterResource(if (editLocked) R.drawable.lock else R.drawable.lock_open),
                                         contentDescription = null,
                                     )
                                 }
@@ -639,7 +649,7 @@ fun LocalPlaylistScreen(
                                         )
                                     }
 
-                                    if (sortType == PlaylistSongSortType.CUSTOM && !locked && !inSelectMode && !isSearching && editable) {
+                                    if (sortType == PlaylistSongSortType.CUSTOM && !editLocked && !inSelectMode && !isSearching && editable) {
                                         IconButton(
                                             onClick = { },
                                             modifier = Modifier.draggableHandle(),
@@ -701,7 +711,7 @@ fun LocalPlaylistScreen(
                         )
                     }
 
-                    if (locked || inSelectMode || !swipeRemoveEnabled) {
+                    if (editLocked || inSelectMode || !swipeRemoveEnabled) {
                         Box(modifier = Modifier.animateItem()) {
                             content()
                         }

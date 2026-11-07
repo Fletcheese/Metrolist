@@ -1120,6 +1120,14 @@ interface DatabaseDao {
     @Query("SELECT *, (SELECT COUNT(*) FROM playlist_song_map WHERE playlistId = playlist.id) AS songCount FROM playlist WHERE bookmarkedAt IS NOT NULL ORDER BY songCount")
     fun playlistsBySongCountAsc(): Flow<List<Playlist>>
 
+    /** Downloaded songs per playlist, for offline mode. Playlists with none are left out. */
+    @Query(
+        "SELECT playlist_song_map.playlistId AS playlistId, COUNT(*) AS count FROM playlist_song_map " +
+            "JOIN song ON song.id = playlist_song_map.songId WHERE song.isDownloaded = 1 " +
+            "GROUP BY playlist_song_map.playlistId",
+    )
+    fun playlistDownloadedCounts(): Flow<List<com.metrolist.music.db.entities.PlaylistDownloadCount>>
+
     fun playlists(
         sortType: PlaylistSortType,
         descending: Boolean,

@@ -81,6 +81,10 @@ import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.media3.exoplayer.offline.Download
+import com.metrolist.music.LocalDownloadUtil
+import com.metrolist.music.ui.component.OfflineBanner
+import com.metrolist.music.utils.rememberIsOnline
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -174,6 +178,10 @@ fun Queue(
 
     val playerConnection = LocalPlayerConnection.current ?: return
     val isPlaying by playerConnection.isEffectivelyPlaying.collectAsStateWithLifecycle()
+
+    // FletchTunes offline mode: grey out what isn't downloaded; MusicService skips it on play.
+    val isOnline = rememberIsOnline()
+    val queueDownloads by LocalDownloadUtil.current.downloads.collectAsStateWithLifecycle()
     val repeatMode by playerConnection.repeatMode.collectAsStateWithLifecycle()
 
     val currentWindowIndex by playerConnection.currentWindowIndex.collectAsStateWithLifecycle()
@@ -774,6 +782,12 @@ fun Queue(
                     )
                 }
 
+                if (!isOnline) {
+                    item(key = "queue_offline_hint") {
+                        OfflineBanner(text = stringResource(R.string.offline_queue_hint))
+                    }
+                }
+
                 itemsIndexed(
                     items = mutableQueueWindows,
                     key = { _, item -> item.uid.hashCode() },
@@ -836,10 +850,14 @@ fun Queue(
                             }
                         }
 
+                        val unplayableOffline = !isOnline &&
+                            queueDownloads[window.mediaItem.mediaId]?.state != Download.STATE_COMPLETED
                         val content: @Composable () -> Unit = {
                             Row(
                                 horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.animateItem(),
+                                modifier = Modifier
+                                    .animateItem()
+                                    .alpha(if (unplayableOffline) 0.38f else 1f),
                             ) {
                                 MediaMetadataListItem(
                                     mediaMetadata = window.mediaItem.metadata!!,

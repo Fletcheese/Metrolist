@@ -171,11 +171,13 @@ fun LibraryPlaylistListItem(
     menuState: MenuState,
     coroutineScope: CoroutineScope,
     playlist: Playlist,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
 ) {
     val navController = LocalNavController.current
     PlaylistListItem(
     playlist = playlist,
+    subtitleOverride = subtitle,
     trailingContent = {
         androidx.compose.material3.IconButton(
             onClick = {

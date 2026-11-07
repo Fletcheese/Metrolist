@@ -55,6 +55,10 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.metrolist.music.LocalPlayerConnection
+import com.metrolist.music.LocalDownloadUtil
+import androidx.media3.exoplayer.offline.Download
+import androidx.compose.ui.graphics.Color
+import com.metrolist.music.utils.rememberIsOnline
 import com.metrolist.music.R
 import com.metrolist.music.db.entities.QueueEntity
 import com.metrolist.music.extensions.toMediaItem
@@ -475,11 +479,20 @@ private fun QueueCard(
 
         AnimatedVisibility(visible = expanded) {
             Column(modifier = Modifier.padding(start = 44.dp, end = 12.dp, bottom = 12.dp)) {
+                // FletchTunes offline mode: grey out songs that aren't downloaded.
+                val isOnline = rememberIsOnline()
+                val downloads by LocalDownloadUtil.current.downloads.collectAsStateWithLifecycle()
                 previewSongs.take(10).forEach { song ->
+                    val unplayable = !isOnline && downloads[song.id]?.state != Download.STATE_COMPLETED
                     Text(
                         text = song.title,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
+                        color = if (unplayable) {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        } else {
+                            Color.Unspecified
+                        },
                         modifier = Modifier.padding(vertical = 2.dp),
                     )
                 }

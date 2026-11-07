@@ -90,6 +90,9 @@ import androidx.compose.ui.platform.LocalContext
 import com.metrolist.music.utils.DiscoverMix
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
+import com.metrolist.music.utils.rememberIsOnline
+import com.metrolist.music.ui.component.OfflineBanner
+import androidx.compose.foundation.layout.Column
 import kotlinx.coroutines.launch
 import com.metrolist.music.viewmodels.LibraryPlaylistsViewModel
 import kotlinx.coroutines.Dispatchers
@@ -101,6 +104,8 @@ private data class VisiblePlaylistItem(
     val playlist: Playlist,
     val autoPlaylist: Boolean,
     val route: String? = null,
+    // Offline mode: how many of this playlist's songs are downloaded.
+    val offlineCount: Int? = null,
 )
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -213,7 +218,11 @@ fun LibraryPlaylistsScreen(
     val isLoggedIn = remember(innerTubeCookie) {
         "SAPISID" in parseCookieString(innerTubeCookie)
     }
-    val showDiscoverMix = isLoggedIn && matchesNormalizedQuery(normalizedQuery, discoverMixPlaylist.playlist.name)
+    // Offline mode: Library shows only what can play without a network (FletchTunes).
+    val isOnline = rememberIsOnline()
+    val downloadedCounts by viewModel.downloadedCounts.collectAsStateWithLifecycle()
+
+    val showDiscoverMix = isOnline && isLoggedIn && matchesNormalizedQuery(normalizedQuery, discoverMixPlaylist.playlist.name)
     val openRoute: (String) -> Unit = { route ->
         if (route == DiscoverMix.ROUTE) {
             coroutineScope.launch { DiscoverMix.open(context, navController) }
@@ -227,16 +236,19 @@ fun LibraryPlaylistsScreen(
     val (showTop) = rememberPreference(ShowTopPlaylistKey, true)
     val (showUploaded) = rememberPreference(ShowUploadedPlaylistKey, true)
     val (showCached) = rememberPreference(ShowCachedPlaylistKey, true)
-    val showLikedPlaylist = BuildConfig.DISCOVERY_FEATURES && showLiked && matchesNormalizedQuery(normalizedQuery, likedPlaylist.playlist.name)
+    val showLikedPlaylist = isOnline && BuildConfig.DISCOVERY_FEATURES && showLiked && matchesNormalizedQuery(normalizedQuery, likedPlaylist.playlist.name)
     val showDownloadedPlaylist =
-        BuildConfig.DISCOVERY_FEATURES && showDownloaded && matchesNormalizedQuery(normalizedQuery, downloadPlaylist.playlist.name)
-    val showCachedPlaylists = BuildConfig.DISCOVERY_FEATURES && showCached && matchesNormalizedQuery(normalizedQuery, cachedPlaylist.playlist.name)
-    val showTopPlaylists = BuildConfig.DISCOVERY_FEATURES && showTop && matchesNormalizedQuery(normalizedQuery, topPlaylist.playlist.name)
+        (!isOnline || (BuildConfig.DISCOVERY_FEATURES && showDownloaded)) &&
+            matchesNormalizedQuery(normalizedQuery, downloadPlaylist.playlist.name)
+    val showCachedPlaylists = isOnline && BuildConfig.DISCOVERY_FEATURES && showCached && matchesNormalizedQuery(normalizedQuery, cachedPlaylist.playlist.name)
+    val showTopPlaylists = isOnline && BuildConfig.DISCOVERY_FEATURES && showTop && matchesNormalizedQuery(normalizedQuery, topPlaylist.playlist.name)
     val showUploadedPlaylists =
-        BuildConfig.DISCOVERY_FEATURES && showUploaded && matchesNormalizedQuery(normalizedQuery, uploadedPlaylist.playlist.name)
+        isOnline && BuildConfig.DISCOVERY_FEATURES && showUploaded && matchesNormalizedQuery(normalizedQuery, uploadedPlaylist.playlist.name)
 
     val visibleResults = remember(
         filteredPlaylists,
+        isOnline,
+        downloadedCounts,
         showDiscoverMix,
         showLikedPlaylist,
         showDownloadedPlaylist,
@@ -310,11 +322,14 @@ fun LibraryPlaylistsScreen(
             filteredPlaylists
                 .distinctBy { it.id }
                 .forEach { playlist ->
+                    val offlineCount = if (isOnline) null else downloadedCounts[playlist.id] ?: 0
+                    if (offlineCount == 0) return@forEach
                     add(
                         VisiblePlaylistItem(
                             key = playlist.id,
                             playlist = playlist,
                             autoPlaylist = false,
+                            offlineCount = offlineCount,
                         ),
                     )
                 }
@@ -449,7 +464,10 @@ fun LibraryPlaylistsScreen(
                         key = "filter",
                         contentType = CONTENT_TYPE_HEADER,
                     ) {
-                        filterContent()
+                        Column {
+                            filterContent()
+                            if (!isOnline) OfflineBanner()
+                        }
                     }
 
                     item(
@@ -496,6 +514,9 @@ fun LibraryPlaylistsScreen(
                                 coroutineScope = coroutineScope,
                                 playlist = item.playlist,
                                 modifier = Modifier.animateItem(),
+                                subtitle = item.offlineCount?.let {
+                                    stringResource(R.string.offline_song_count, it, item.playlist.songCount)
+                                },
                             )
                         }
                     }
@@ -516,7 +537,10 @@ fun LibraryPlaylistsScreen(
                         span = { GridItemSpan(maxLineSpan) },
                         contentType = CONTENT_TYPE_HEADER,
                     ) {
-                        filterContent()
+                        Column {
+                            filterContent()
+                            if (!isOnline) OfflineBanner()
+                        }
                     }
 
                     item(

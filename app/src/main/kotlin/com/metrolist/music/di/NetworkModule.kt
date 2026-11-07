@@ -21,6 +21,6 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideNetworkConnectivityObserver(@ApplicationContext context: Context): NetworkConnectivityObserver {
-        return NetworkConnectivityObserver(context)
+        return NetworkConnectivityObserver.get(context)
     }
 }

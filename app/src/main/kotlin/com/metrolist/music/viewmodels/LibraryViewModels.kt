@@ -50,6 +50,7 @@ import com.metrolist.music.extensions.toEnum
 import com.metrolist.music.playback.DownloadUtil
 import com.metrolist.music.utils.PodcastRefreshTrigger
 import com.metrolist.music.utils.SyncUtils
+import com.metrolist.music.utils.NetworkConnectivityObserver
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.reportException
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -79,7 +80,10 @@ constructor(
     database: MusicDatabase,
     downloadUtil: DownloadUtil,
     private val syncUtils: SyncUtils,
+    networkConnectivity: NetworkConnectivityObserver,
 ) : ViewModel() {
+    // FletchTunes offline mode: with no network the Songs list is the Downloaded filter,
+    // whatever chip is saved, and switches back live when the network returns.
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
     val debouncedSearchQuery = _searchQuery
@@ -102,9 +106,12 @@ constructor(
                     it[HideExplicitKey] ?: false,
                     it[HideVideoSongsKey] ?: false
                 )
-            }.distinctUntilChanged()
-            .flatMapLatest { (filterSort, hideExplicit, hideVideoSongs) ->
-                val (filter, sortType, descending) = filterSort
+            }.combine(networkConnectivity.networkStatus) { prefs, online -> prefs to online }
+            .distinctUntilChanged()
+            .flatMapLatest { (prefs, online) ->
+                val (filterSort, hideExplicit, hideVideoSongs) = prefs
+                val (savedFilter, sortType, descending) = filterSort
+                val filter = if (online) savedFilter else SongFilter.DOWNLOADED
                 when (filter) {
                     SongFilter.LIBRARY -> database.songs(sortType, descending).map { it.filterExplicit(hideExplicit).filterVideoSongs(hideVideoSongs) }
                     SongFilter.LIKED -> database.likedSongs(sortType, descending).map { it.filterExplicit(hideExplicit).filterVideoSongs(hideVideoSongs) }
@@ -302,6 +309,12 @@ constructor(
         context.dataStore.data
             .map { it[TopSize] ?: "50" }
             .distinctUntilChanged()
+
+    /** playlistId -> downloaded song count; offline, Library shows only playlists in here. */
+    val downloadedCounts =
+        database.playlistDownloadedCounts()
+            .map { rows -> rows.associate { it.playlistId to it.count } }
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyMap())
 }
 
 @HiltViewModel

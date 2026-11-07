@@ -883,6 +883,7 @@ fun PlaylistListItem(
     playlist: Playlist,
     modifier: Modifier = Modifier,
     autoPlaylist: Boolean = false,
+    subtitleOverride: String? = null,
     badges: @Composable RowScope.() -> Unit = {
         val downloadUtil = LocalDownloadUtil.current
         val database = LocalDatabase.current
@@ -914,7 +915,9 @@ fun PlaylistListItem(
     trailingContent: @Composable RowScope.() -> Unit = {}
 ) = ListItem(
     title = playlist.playlist.name,
-    subtitle = if (autoPlaylist) {
+    subtitle = if (subtitleOverride != null) {
+        subtitleOverride
+    } else if (autoPlaylist) {
         ""
     } else {
         if (playlist.songCount == 0 && playlist.playlist.remoteSongCount != null) {

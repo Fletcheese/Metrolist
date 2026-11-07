@@ -10,6 +10,12 @@ import androidx.room.Embedded
 import androidx.room.Junction
 import androidx.room.Relation
 
+/** How many of a playlist's songs are downloaded (offline mode). */
+data class PlaylistDownloadCount(
+    val playlistId: String,
+    val count: Int,
+)
+
 @Immutable
 data class Playlist(
     @Embedded

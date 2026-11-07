@@ -41,6 +41,7 @@ import androidx.core.content.getSystemService
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.exoplayer.offline.Download
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -1608,6 +1609,35 @@ class MusicService :
         lastSavedPlayerState = null
     }
 
+    private fun isDownloadedForOffline(mediaId: String): Boolean =
+        downloadUtil.downloads.value[mediaId]?.state == Download.STATE_COMPLETED
+
+    /**
+     * FletchTunes offline mode. With no network, a queue item that isn't downloaded can't play,
+     * so move to the next downloaded one in play order (honouring shuffle), or pause if none is
+     * left. Returns true if it moved or paused, false when there was nothing to do.
+     */
+    private fun skipUnplayableWhileOffline(): Boolean {
+        if (isNetworkConnected.value || connectivityObserver.isCurrentlyConnected()) return false
+        val current = player.currentMediaItem ?: return false
+        if (isDownloadedForOffline(current.mediaId)) return false
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return false
+        val shuffle = player.shuffleModeEnabled
+        var index = timeline.getNextWindowIndex(player.currentMediaItemIndex, Player.REPEAT_MODE_OFF, shuffle)
+        while (index != C.INDEX_UNSET) {
+            if (isDownloadedForOffline(player.getMediaItemAt(index).mediaId)) {
+                Timber.tag(TAG).d("Offline: skipping %s, not downloaded", current.mediaId)
+                player.seekTo(index, 0L)
+                return true
+            }
+            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, shuffle)
+        }
+        Timber.tag(TAG).d("Offline: nothing downloaded left in the queue, pausing")
+        player.pause()
+        return true
+    }
+
     private fun waitOnNetworkError() {
         if (waitingForNetworkConnection.value) return
 
@@ -3008,6 +3038,9 @@ class MusicService :
             }
         }
         lastTransitionedMediaId = mediaItem?.mediaId
+        // FletchTunes offline mode: arriving at a song that isn't downloaded skips past it.
+        // Posted, not run inline, so the seek doesn't re-enter this callback mid-dispatch.
+        scope.launch { skipUnplayableWhileOffline() }
         initialBufferRecoveryJob?.cancel()
         initialBufferRecoveryJob = null
         initialBufferRecoveryAttemptedMediaId = null
@@ -3619,6 +3652,7 @@ class MusicService :
             }
 
             !isNetworkConnected.value -> {
+                if (skipUnplayableWhileOffline()) return
                 Timber.tag(TAG).d("No internet connection, waiting for connection")
                 waitOnNetworkError()
                 return

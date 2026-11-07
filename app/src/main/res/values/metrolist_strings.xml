@@ -1019,4 +1019,8 @@
     <string name="discover_mix">Discover Mix</string>
     <string name="discover_mix_finding">Finding your Discover Mix…</string>
     <string name="discover_mix_not_found">YouTube Music didn\'t offer a Discover Mix for this account</string>
+    <string name="offline_banner">You\'re offline. Showing downloaded music only.</string>
+    <string name="offline_song_count">%1$d of %2$d songs downloaded</string>
+    <string name="offline_search">You\'re offline, so search covers only music saved on this phone.</string>
+    <string name="offline_queue_hint">Offline: greyed-out songs aren\'t downloaded and will be skipped.</string>
 </resources>

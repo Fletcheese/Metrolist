@@ -10,6 +10,10 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -30,7 +34,10 @@ class NetworkConnectivityObserver(context: Context) {
         }
 
         override fun onLost(network: Network) {
-            _networkStatus.value = isCurrentlyConnected()
+            // During onLost the lost network can still be reported as the active one, so don't
+            // trust activeNetwork alone or the status can stay "connected" after it drops.
+            val active = connectivityManager.activeNetwork
+            _networkStatus.value = active != null && active != network && isCurrentlyConnected()
         }
 
         override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
@@ -70,4 +77,26 @@ class NetworkConnectivityObserver(context: Context) {
             false
         }
     }
+
+    companion object {
+        @Volatile
+        private var instance: NetworkConnectivityObserver? = null
+
+        /** One app-wide observer, shared by Hilt injection and the Compose UI. */
+        fun get(context: Context): NetworkConnectivityObserver =
+            instance ?: synchronized(this) {
+                instance ?: NetworkConnectivityObserver(context.applicationContext).also { instance = it }
+            }
+    }
+}
+
+/**
+ * Whether the device has a network right now, updating live as it drops and returns.
+ * FletchTunes' offline mode keys off this: offline, Library shows only what is downloaded.
+ */
+@Composable
+fun rememberIsOnline(): Boolean {
+    val context = LocalContext.current
+    val status = remember { NetworkConnectivityObserver.get(context).networkStatus }
+    return status.collectAsState().value
 }
