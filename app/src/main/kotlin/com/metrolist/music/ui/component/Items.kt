@@ -1119,6 +1119,18 @@ fun MediaMetadataListItem(
     )
 }
 
+/** FletchTunes listened marker: "Played" or "N min left" in place of the duration, or null for no progress. */
+private fun episodeProgressLabel(
+    percent: Int?,
+    durationSeconds: Int?,
+): String? {
+    if (percent == null || percent <= 0) return null
+    if (com.metrolist.music.utils.EpisodeProgress.isPlayed(percent)) return "Played"
+    val duration = durationSeconds?.takeIf { it > 0 } ?: return "$percent% played"
+    val minutesLeft = ((duration * (100 - percent) / 100) + 59) / 60
+    return "$minutesLeft min left"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun YouTubeListItem(
@@ -1129,6 +1141,8 @@ fun YouTubeListItem(
     isActive: Boolean = false,
     isPlaying: Boolean = false,
     isSwipeable: Boolean = true,
+    /** FletchTunes listened marker: merged 0-100 progress for a podcast episode, or null for none. */
+    episodeProgressPercent: Int? = null,
     trailingContent: @Composable RowScope.() -> Unit = {},
     badges: @Composable RowScope.() -> Unit = {
         val database = LocalDatabase.current
@@ -1172,7 +1186,8 @@ fun YouTubeListItem(
                         item.artists.joinToArtistString(artistSeparator) {
                             ArtistNameAliases.resolve(artistNameAliases, it.id, it.name)
                         },
-                        makeTimeString(item.duration?.times(1000L)),
+                        episodeProgressLabel(episodeProgressPercent, item.duration)
+                            ?: makeTimeString(item.duration?.times(1000L)),
                     )
 
                 is AlbumItem ->
@@ -1199,20 +1214,41 @@ fun YouTubeListItem(
                 is EpisodeItem ->
                     joinByBullet(
                         item.author?.let { ArtistNameAliases.resolve(artistNameAliases, it.id, it.name) },
-                        makeTimeString(item.duration?.times(1000L)),
+                        episodeProgressLabel(episodeProgressPercent, item.duration)
+                            ?: makeTimeString(item.duration?.times(1000L)),
                     )
             },
             badges = badges,
             thumbnailContent = {
-                ItemThumbnail(
-                    thumbnailUrl = item.thumbnail,
-                    albumIndex = albumIndex,
-                    isSelected = isSelected,
-                    isActive = isActive,
-                    isPlaying = isPlaying,
-                    shape = if (item is ArtistItem) CircleShape else RoundedCornerShape(ThumbnailCornerRadius),
-                    modifier = Modifier.size(ListThumbnailSize)
-                )
+                Box {
+                    ItemThumbnail(
+                        thumbnailUrl = item.thumbnail,
+                        albumIndex = albumIndex,
+                        isSelected = isSelected,
+                        isActive = isActive,
+                        isPlaying = isPlaying,
+                        shape = if (item is ArtistItem) CircleShape else RoundedCornerShape(ThumbnailCornerRadius),
+                        modifier = Modifier.size(ListThumbnailSize)
+                    )
+                    if (episodeProgressPercent != null && episodeProgressPercent > 0) {
+                        // FletchTunes listened marker: a YouTube-style bar along the thumbnail's foot.
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .width(ListThumbnailSize)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(bottomStart = ThumbnailCornerRadius, bottomEnd = ThumbnailCornerRadius))
+                                .background(Color.Black.copy(alpha = 0.45f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(episodeProgressPercent.coerceIn(0, 100) / 100f)
+                                    .height(4.dp)
+                                    .background(MaterialTheme.colorScheme.primary)
+                            )
+                        }
+                    }
+                }
             },
             trailingContent = trailingContent,
             modifier = modifier,

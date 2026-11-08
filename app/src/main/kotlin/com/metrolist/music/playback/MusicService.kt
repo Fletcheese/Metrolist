@@ -1385,6 +1385,9 @@ class MusicService :
                 // episode changes already save it, so this is only a crash safety net: once a
                 // minute rather than every 15 s.
                 val currentMetadata = player.currentMediaItem?.metadata
+                if (currentMetadata?.isEpisode == true && player.duration != C.TIME_UNSET) {
+                    previousEpisodeDurationMs = player.duration
+                }
                 if (ticks % 4 == 0 && currentMetadata?.isEpisode == true && player.isPlaying && player.currentPosition > 0) {
                     previousEpisodePosition = player.currentPosition
                     saveEpisodePosition(currentMetadata.id, player.currentPosition)
@@ -3005,6 +3008,10 @@ class MusicService :
     private var lastTransitionedMediaId: String? = null
     private var previousEpisodePosition: Long = 0L
 
+    // FletchTunes listened marker: the playing episode's length from the player, for rows whose
+    // stored duration is unknown (-1), so a finished episode can still be saved at its end.
+    private var previousEpisodeDurationMs: Long = 0L
+
     private fun watchtimeSink(session: InnerTube.WatchtimeSession) =
         object : WatchtimeSink {
             override val flushIntervalMs = session.flushIntervalMs
@@ -3045,12 +3052,35 @@ class MusicService :
      * Restore podcast episode playback position from database.
      * Seeks to saved position if available.
      */
+    private fun markEpisodeFinished(
+        episodeId: String,
+        playerDurationMs: Long,
+    ) {
+        scope.launch(Dispatchers.IO + SilentHandler) {
+            if ((database.getDuration(episodeId) ?: 0) > 0) {
+                database.markEpisodeFinished(episodeId)
+            } else if (playerDurationMs > 0) {
+                database.updatePlaybackPosition(episodeId, playerDurationMs)
+            }
+            Timber.tag(TAG).d("Episode finished: $episodeId")
+        }
+    }
+
     private fun restoreEpisodePosition(episodeId: String) {
         scope.launch(Dispatchers.IO + SilentHandler) {
             val savedPosition = database.getPlaybackPosition(episodeId)
+            val durationMs = (database.getDuration(episodeId) ?: 0) * 1000L
+            // A finished episode (saved at or within 5 s of its end) starts again from the top.
+            if (savedPosition != null && durationMs > 0 && savedPosition >= durationMs - 5_000L) {
+                Timber.tag(TAG).d("Episode $episodeId already finished; playing from the start")
+                return@launch
+            }
             if (savedPosition != null && savedPosition > 0) {
                 withContext(Dispatchers.Main) {
-                    if (player.currentMediaItem?.mediaId == episodeId) {
+                    val playerDuration = player.duration
+                    if (playerDuration != C.TIME_UNSET && savedPosition >= playerDuration - 5_000L) {
+                        Timber.tag(TAG).d("Episode $episodeId already finished; playing from the start")
+                    } else if (player.currentMediaItem?.mediaId == episodeId) {
                         player.seekTo(savedPosition)
                         Timber.tag(TAG).d("Restored episode position: $episodeId to ${savedPosition}ms")
                     }
@@ -3084,12 +3114,16 @@ class MusicService :
         updateInitialBufferRecovery(player.playbackState)
 
         previousEpisodeId?.let { episodeId ->
-            if (previousEpisodePosition > 0) {
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                // FletchTunes listened marker: it played through to the next item, so it is finished.
+                markEpisodeFinished(episodeId, previousEpisodeDurationMs)
+            } else if (previousEpisodePosition > 0) {
                 saveEpisodePosition(episodeId, previousEpisodePosition)
             }
         }
         previousEpisodeId = null
         previousEpisodePosition = 0L
+        previousEpisodeDurationMs = 0L
 
         val newMetadata = mediaItem?.metadata
         if (newMetadata?.isEpisode == true) {
@@ -3190,6 +3224,11 @@ class MusicService :
         if (playbackState == Player.STATE_ENDED) {
             player.currentMediaItem?.mediaId?.let { mediaId ->
                 scope.launch(Dispatchers.IO) { markCachedIfFullyDownloaded(mediaId) }
+            }
+            // FletchTunes listened marker: the last episode in the queue played to its end.
+            player.currentMediaItem?.metadata?.takeIf { it.isEpisode }?.let { episode ->
+                previousEpisodePosition = 0L
+                markEpisodeFinished(episode.id, player.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
             }
 
             // Check sleep timer guard - don't autoplay/repeat if sleep timer will pause

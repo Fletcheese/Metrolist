@@ -2540,6 +2540,7 @@ object YouTube {
                                 duration = duration,
                                 thumbnail = renderer.thumbnail?.getThumbnailUrl() ?: "",
                                 isEpisode = true,
+                                playbackProgressPercent = renderer.playbackProgressPercent,
                             )
                         )
                     }
@@ -2585,6 +2586,7 @@ object YouTube {
                                     duration = duration,
                                     thumbnail = renderer.thumbnail?.getThumbnailUrl() ?: "",
                                     isEpisode = true,
+                                    playbackProgressPercent = renderer.playbackProgressPercent,
                                 )
                             )
                         }
@@ -2592,7 +2594,7 @@ object YouTube {
                 }
             }
 
-            Timber.d("[PODCAST_API] newEpisodes SUCCESS: ${episodesList.size} items")
+            Timber.d("[PODCAST_API] newEpisodes SUCCESS: ${episodesList.size} items, ${episodesList.count { it.playbackProgressPercent != null }} with YouTube progress")
             coroutineScope {
                 episodesList.map { episode ->
                     async {

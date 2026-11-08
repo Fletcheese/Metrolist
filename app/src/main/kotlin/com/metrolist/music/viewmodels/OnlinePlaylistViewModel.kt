@@ -13,8 +13,16 @@ import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.PlaylistItem
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.filterVideoSongs
+import androidx.datastore.preferences.core.edit
+import com.metrolist.music.constants.HidePlayedEpisodesKey
 import com.metrolist.music.constants.HideVideoSongsKey
 import com.metrolist.music.db.MusicDatabase
+import com.metrolist.music.utils.EpisodeProgress
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.get
 import com.metrolist.music.utils.reportException
@@ -60,6 +68,49 @@ class OnlinePlaylistViewModel @Inject constructor(
 
     val dbPlaylist = database.playlistByBrowseId(playlistId)
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
+
+    /** FletchTunes: New Episodes gets the "Hide played" filter. */
+    val isNewEpisodes = normalizedPlaylistId == "RDPN"
+
+    /**
+     * FletchTunes listened marker: episode id to merged 0-100 progress, from YouTube's
+     * playbackProgress and the locally saved position (live, so playing one updates the list).
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val episodeProgress: kotlinx.coroutines.flow.StateFlow<Map<String, Int>> =
+        playlistSongs
+            .flatMapLatest { songs ->
+                val episodes = songs.filter { it.isEpisode }
+                if (episodes.isEmpty()) {
+                    flowOf(emptyMap())
+                } else {
+                    database.episodePositions(episodes.map { it.id }).map { rows ->
+                        val local = rows.associateBy { it.id }
+                        episodes.mapNotNull { song ->
+                            val row = local[song.id]
+                            EpisodeProgress
+                                .percent(
+                                    youtubePercent = song.playbackProgressPercent,
+                                    localPositionMs = row?.playbackPosition,
+                                    durationSeconds = song.duration ?: row?.duration,
+                                )?.let { song.id to it }
+                        }.toMap()
+                    }
+                }
+            }.flowOn(Dispatchers.IO)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    val hidePlayedEpisodes =
+        context.dataStore.data
+            .map { it[HidePlayedEpisodesKey] ?: true }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.Eagerly, context.dataStore.get(HidePlayedEpisodesKey, true))
+
+    fun setHidePlayedEpisodes(hide: Boolean) {
+        viewModelScope.launch {
+            context.dataStore.edit { it[HidePlayedEpisodesKey] = hide }
+        }
+    }
 
     var continuation: String? = null
         private set

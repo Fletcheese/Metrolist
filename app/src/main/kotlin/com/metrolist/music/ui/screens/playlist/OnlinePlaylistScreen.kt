@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +33,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -102,6 +104,7 @@ import com.metrolist.music.ui.menu.YouTubeSelectionSongMenu
 import com.metrolist.music.ui.menu.YouTubeSongMenu
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.ui.utils.resize
+import com.metrolist.music.utils.EpisodeProgress
 import com.metrolist.music.utils.makeTimeString
 import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.viewmodels.OnlinePlaylistViewModel
@@ -142,12 +145,28 @@ fun OnlinePlaylistScreen(
     var isSearching by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
 
-    val filteredSongs =
-        remember(songs, query) {
-            if (query.text.isEmpty()) {
-                songs.mapIndexed { i, s -> i to s }
+    // FletchTunes listened marker and New Episodes "Hide played" filter.
+    val episodeProgress by viewModel.episodeProgress.collectAsStateWithLifecycle()
+    val hidePlayedEpisodes by viewModel.hidePlayedEpisodes.collectAsStateWithLifecycle()
+    val hidePlayed = viewModel.isNewEpisodes && hidePlayedEpisodes
+    // The episode playing now stays listed even once it counts as played, so it doesn't vanish mid-listen.
+    val playingId = mediaMetadata?.id
+    val visibleSongs =
+        remember(songs, hidePlayed, episodeProgress, playingId) {
+            if (!hidePlayed) {
+                songs
             } else {
-                songs.mapIndexed { i, s -> i to s }.filter {
+                songs.filter { it.id == playingId || !EpisodeProgress.isPlayed(episodeProgress[it.id]) }
+            }
+        }
+    val hiddenPlayedCount = songs.size - visibleSongs.size
+
+    val filteredSongs =
+        remember(visibleSongs, query) {
+            if (query.text.isEmpty()) {
+                visibleSongs.mapIndexed { i, s -> i to s }
+            } else {
+                visibleSongs.mapIndexed { i, s -> i to s }.filter {
                     it.second.title.contains(query.text, true) ||
                         it.second.artists.fastAny { a -> a.name.contains(query.text, true) }
                 }
@@ -261,7 +280,36 @@ fun OnlinePlaylistScreen(
                         }
                     }
 
-                    itemsIndexed(filteredSongs) { index, (_, songItem) ->
+                    if (viewModel.isNewEpisodes) {
+                        item(key = "hide_played_toggle") {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            ) {
+                                FilterChip(
+                                    selected = hidePlayedEpisodes,
+                                    onClick = { viewModel.setHidePlayedEpisodes(!hidePlayedEpisodes) },
+                                    label = { Text("Hide played") },
+                                    leadingIcon =
+                                        if (hidePlayedEpisodes) {
+                                            { Icon(painterResource(R.drawable.check), null) }
+                                        } else {
+                                            null
+                                        },
+                                )
+                                if (hidePlayedEpisodes && hiddenPlayedCount > 0) {
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        text = "$hiddenPlayedCount hidden",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    itemsIndexed(filteredSongs, key = { _, (_, s) -> s.id }) { index, (_, songItem) ->
                         val onCheckedChange: (Boolean) -> Unit = {
                             if (it) {
                                 selection.add(songItem.id)
@@ -272,6 +320,7 @@ fun OnlinePlaylistScreen(
 
                         YouTubeListItem(
                             item = songItem,
+                            episodeProgressPercent = episodeProgress[songItem.id],
                             isActive = mediaMetadata?.id == songItem.id,
                             isPlaying = isPlaying,
                             isSelected = inSelectMode && songItem.id in selection,

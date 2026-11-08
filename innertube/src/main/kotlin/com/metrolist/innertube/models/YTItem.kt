@@ -37,7 +37,9 @@ data class SongItem(
     val libraryRemoveToken: String? = null,
     val historyRemoveToken: String? = null,
     val isEpisode: Boolean = false,
-    val uploadEntityId: String? = null
+    val uploadEntityId: String? = null,
+    /** YouTube's listened percentage (0-100) for a podcast episode, when the browse response carries one. */
+    val playbackProgressPercent: Int? = null,
 ) : YTItem() {
     val isVideoSong: Boolean
         get() = musicVideoType != null && musicVideoType != MUSIC_VIDEO_TYPE_ATV
@@ -141,6 +143,8 @@ data class EpisodeItem(
     val libraryRemoveToken: String? = null,
     val markAsPlayedToken: String? = null,
     val markAsUnplayedToken: String? = null,
+    /** YouTube's listened percentage (0-100), when the browse response carries one. */
+    val playbackProgressPercent: Int? = null,
 ) : YTItem() {
     override val shareLink: String
         get() = "https://music.youtube.com/watch?v=$id"
@@ -157,6 +161,7 @@ data class EpisodeItem(
         isEpisode = true,
         libraryAddToken = libraryAddToken,
         libraryRemoveToken = libraryRemoveToken,
+        playbackProgressPercent = playbackProgressPercent,
     )
 }
 

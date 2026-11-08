@@ -1274,6 +1274,17 @@ interface DatabaseDao {
     @Query("SELECT playbackPosition FROM song WHERE id = :songId")
     fun getPlaybackPosition(songId: String): Long?
 
+    /** FletchTunes: saved positions for the listened marker; live, so a play updates the list. */
+    @Query("SELECT id, playbackPosition, duration FROM song WHERE playbackPosition IS NOT NULL AND id IN (:songIds)")
+    fun episodePositions(songIds: List<String>): Flow<List<com.metrolist.music.db.entities.EpisodePosition>>
+
+    /** FletchTunes: an episode that played to its end is saved at its full length, so it reads as played. */
+    @Query("UPDATE song SET playbackPosition = duration * 1000 WHERE id = :songId AND duration > 0")
+    fun markEpisodeFinished(songId: String)
+
+    @Query("SELECT duration FROM song WHERE id = :songId")
+    fun getDuration(songId: String): Int?
+
     @Transaction
     @Query("SELECT * FROM song WHERE isUploaded = 1 ORDER BY dateDownload")
     fun uploadedSongsByCreateDateAsc(): Flow<List<Song>>
