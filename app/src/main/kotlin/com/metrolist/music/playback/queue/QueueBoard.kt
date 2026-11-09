@@ -16,6 +16,10 @@
  *    direct fix for the single-queue "forgotten on close" bug (FLETCHTUNES-QUEUES.md
  *    hypothesis 3): callers are expected to call [recordQueueEdit] on every queue mutation,
  *    not rely on a timer.
+ *
+ * FletchTunes queue sync: every mutation also updates the queue's `queue_sync` row (when and
+ * where its content or playback last changed), and the `apply*` functions take the server's
+ * copy. The sync itself lives in `sync/QueueSyncRepository.kt`.
  */
 
 package com.metrolist.music.playback.queue
@@ -27,19 +31,34 @@ import java.io.File
 import com.metrolist.music.db.daos.QueueDao
 import com.metrolist.music.db.entities.QueueEntity
 import com.metrolist.music.db.entities.QueueSongMapEntity
+import com.metrolist.music.db.entities.QueueSyncEntity
 import com.metrolist.music.di.ApplicationScope
 import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.models.toMediaMetadata
+import com.metrolist.music.playback.queue.sync.PlaybackState
+import com.metrolist.music.playback.queue.sync.QueueContent
+import com.metrolist.music.playback.queue.sync.RemoteQueue
+import com.metrolist.music.playback.queue.sync.TOMBSTONE_HASH
+import com.metrolist.music.playback.queue.sync.contentHash
+import com.metrolist.music.playback.queue.sync.hash
+import com.metrolist.music.playback.queue.sync.syncDeviceName
+import com.metrolist.music.playback.queue.sync.toMediaMetadata
+import com.metrolist.music.playback.queue.sync.toSyncSong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -57,6 +76,44 @@ class QueueBoard @Inject constructor(
 
     val activeQueues: Flow<List<QueueEntity>> = queueDao.getActiveQueues()
     val archivedQueues: Flow<List<QueueEntity>> = queueDao.getArchivedQueues()
+
+    /** Queue sync: what MusicService has loaded. Set by MusicService; read by the sync. */
+    @Volatile var playerAttached = false
+    @Volatile var playerPlaying = false
+
+    /** True if [id] is the queue in the player right now, so changing it means reloading the player. */
+    fun isLoadedInPlayer(id: String) = playerAttached && _activeQueueId.value == id
+
+    enum class SyncNudge { CONTENT, FLUSH }
+
+    private val _syncNudges = MutableSharedFlow<SyncNudge>(extraBufferCapacity = 16, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /** Tells the sync that something changed: CONTENT (an edit) or FLUSH (a pause or switch). */
+    val syncNudges: SharedFlow<SyncNudge> = _syncNudges.asSharedFlow()
+
+    fun nudgeSync(nudge: SyncNudge) {
+        _syncNudges.tryEmit(nudge)
+    }
+
+    private val _reloadRequests = MutableSharedFlow<String>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /** Ids of queues the sync just changed under the player; MusicService reloads (or detaches) them. */
+    val reloadRequests: SharedFlow<String> = _reloadRequests.asSharedFlow()
+
+    /** Queue id -> until when the player's stale copy of it must not be saved over the synced one. */
+    private val reloadPending = ConcurrentHashMap<String, Long>()
+
+    private fun awaitingReload(id: String): Boolean {
+        val until = reloadPending[id] ?: return false
+        if (System.currentTimeMillis() < until) return true
+        reloadPending.remove(id)
+        return false
+    }
+
+    /** MusicService has reloaded [id] from the database, so its saves are current again. */
+    fun reloadDone(id: String) {
+        reloadPending.remove(id)
+    }
 
     fun queueFlow(id: String): Flow<QueueEntity?> = queueDao.getQueue(id)
 
@@ -100,6 +157,9 @@ class QueueBoard @Inject constructor(
             )
             queueDao.replaceSongMaps(id, items.toSongMaps(id))
             _activeQueueId.value = id
+            markContentChanged(id)
+            markPlaybackChanged(id)
+            nudgeSync(SyncNudge.FLUSH)
             id
         }
     }
@@ -121,21 +181,15 @@ class QueueBoard @Inject constructor(
     ) =
         withContext(Dispatchers.IO) {
             mutex.withLock {
+                // The sync has just replaced this queue; the player's copy is the old one.
+                if (awaitingReload(id)) return@withLock
                 ensureSongsExist(items)
                 queueDao.replaceSongMaps(id, items.toSongMaps(id))
                 if (shuffled != null) {
                     queueDao.updateShuffled(id, shuffled)
                     val file = shuffleOrderFile(id)
                     if (shuffled && realPositions != null && realPositions.size == items.size) {
-                        runCatching {
-                            file.parentFile?.mkdirs()
-                            val tmp = File(file.path + ".tmp")
-                            tmp.writeText(realPositions.joinToString(","))
-                            if (!tmp.renameTo(file)) {
-                                file.delete()
-                                tmp.renameTo(file)
-                            }
-                        }
+                        writeShuffleOrder(id, realPositions)
                     } else {
                         file.delete()
                     }
@@ -151,6 +205,8 @@ class QueueBoard @Inject constructor(
                 } else {
                     queueDao.touch(id, System.currentTimeMillis())
                 }
+                if (markContentChanged(id)) nudgeSync(SyncNudge.CONTENT)
+                markPlaybackChanged(id)
             }
         }
 
@@ -161,18 +217,39 @@ class QueueBoard @Inject constructor(
      */
     suspend fun recordPlaybackState(id: String, index: Int, songId: String?, positionMs: Long) =
         withContext(Dispatchers.IO) {
-            mutex.withLock { queueDao.updatePlaybackPosition(id, index, songId, positionMs) }
+            mutex.withLock {
+                if (awaitingReload(id)) return@withLock
+                val before = queueDao.getQueueOnce(id) ?: return@withLock
+                queueDao.updatePlaybackPosition(id, index, songId, positionMs)
+                if (before.currentIndex != index || before.currentSongId != songId || before.positionMs != positionMs) {
+                    markPlaybackChanged(id)
+                }
+            }
         }
 
     suspend fun setShuffled(id: String, shuffled: Boolean) =
-        withContext(Dispatchers.IO) { queueDao.updateShuffled(id, shuffled) }
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                queueDao.updateShuffled(id, shuffled)
+                if (markContentChanged(id)) nudgeSync(SyncNudge.CONTENT)
+            }
+        }
 
     suspend fun rename(id: String, title: String) =
-        withContext(Dispatchers.IO) { queueDao.renameQueue(id, title) }
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                queueDao.renameQueue(id, title)
+                if (markContentChanged(id)) nudgeSync(SyncNudge.CONTENT)
+            }
+        }
 
     suspend fun switchTo(id: String) = withContext(Dispatchers.IO) {
-        queueDao.touch(id, System.currentTimeMillis())
+        mutex.withLock {
+            queueDao.touch(id, System.currentTimeMillis())
+            markPlaybackChanged(id)
+        }
         _activeQueueId.value = id
+        nudgeSync(SyncNudge.FLUSH)
     }
 
     /**
@@ -185,10 +262,7 @@ class QueueBoard @Inject constructor(
     suspend fun savedShuffleOrder(id: String, size: Int): IntArray? = withContext(Dispatchers.IO) {
         mutex.withLock {
             if (queueDao.getQueueOnce(id)?.shuffled != true) return@withLock null
-            val order =
-                runCatching {
-                    shuffleOrderFile(id).readText().split(',').map { it.trim().toInt() }.toIntArray()
-                }.getOrNull() ?: return@withLock null
+            val order = readShuffleOrder(id)?.toIntArray() ?: return@withLock null
             val isPermutation = order.size == size && order.sorted() == (0 until size).toList()
             order.takeIf { isPermutation }
         }
@@ -196,10 +270,34 @@ class QueueBoard @Inject constructor(
 
     private fun shuffleOrderFile(id: String) = File(File(context.filesDir, "queue_shuffle_orders"), id)
 
+    private fun readShuffleOrder(id: String): List<Int>? =
+        runCatching { shuffleOrderFile(id).readText().split(',').map { it.trim().toInt() } }.getOrNull()
+
+    private fun writeShuffleOrder(id: String, order: List<Int>) {
+        val file = shuffleOrderFile(id)
+        runCatching {
+            file.parentFile?.mkdirs()
+            val tmp = File(file.path + ".tmp")
+            tmp.writeText(order.joinToString(","))
+            if (!tmp.renameTo(file)) {
+                file.delete()
+                tmp.renameTo(file)
+            }
+        }
+    }
+
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        shuffleOrderFile(id).delete()
-        queueDao.deleteQueue(id)
+        mutex.withLock {
+            shuffleOrderFile(id).delete()
+            queueDao.deleteQueue(id)
+            // The sync row stays behind as the tombstone that tells the other devices.
+            val state = queueDao.getSyncState(id) ?: QueueSyncEntity(queueId = id)
+            queueDao.upsertSyncState(
+                state.copy(deleted = true, editedAt = System.currentTimeMillis(), editedBy = syncDeviceName(context)),
+            )
+        }
         if (_activeQueueId.value == id) _activeQueueId.value = null
+        nudgeSync(SyncNudge.CONTENT)
     }
 
     /**
@@ -226,26 +324,21 @@ class QueueBoard @Inject constructor(
             val oldSize = existingIds.size
             val newIds = existingIds + songs.map { it.id }
             queueDao.replaceSongMaps(id, newIds.mapIndexed { index, songId -> QueueSongMapEntity(id, songId, index) })
-            val file = shuffleOrderFile(id)
-            if (file.exists()) {
-                runCatching {
-                    val order = file.readText().split(',').map { it.trim().toInt() }
-                    if (order.size == oldSize) {
-                        val tmp = File(file.path + ".tmp")
-                        tmp.writeText((order + (oldSize until newIds.size)).joinToString(","))
-                        if (!tmp.renameTo(file)) {
-                            file.delete()
-                            tmp.renameTo(file)
-                        }
-                    }
-                }
+            if (shuffleOrderFile(id).exists()) {
+                val order = readShuffleOrder(id)
+                if (order != null && order.size == oldSize) writeShuffleOrder(id, order + (oldSize until newIds.size))
             }
             queueDao.touch(id, System.currentTimeMillis())
+            if (markContentChanged(id)) nudgeSync(SyncNudge.CONTENT)
+            markPlaybackChanged(id)
         }
     }
 
     suspend fun unarchive(id: String) = withContext(Dispatchers.IO) {
-        queueDao.unarchiveQueue(id, System.currentTimeMillis())
+        mutex.withLock {
+            queueDao.unarchiveQueue(id, System.currentTimeMillis())
+            markPlaybackChanged(id)
+        }
     }
 
     /** Most recently played, still-active queue + its songs. Used to restore on cold start. */
@@ -269,4 +362,191 @@ class QueueBoard @Inject constructor(
 
     private fun List<MediaMetadata>.toSongMaps(queueId: String) =
         mapIndexed { index, song -> QueueSongMapEntity(queueId, song.id, index) }
+
+    // ---- Queue sync ------------------------------------------------------------------------
+
+    /** Every queue id this device knows of, live or deleted, with its sync state. */
+    suspend fun syncSnapshot(): Pair<Set<String>, Map<String, QueueSyncEntity>> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            queueDao.allQueuesOnce().map { it.id }.toSet() to queueDao.allSyncStates().associateBy { it.queueId }
+        }
+    }
+
+    suspend fun syncState(id: String): QueueSyncEntity? = withContext(Dispatchers.IO) { queueDao.getSyncState(id) }
+
+    /** This device's content hash for queue [id], or null if there is no such queue. */
+    suspend fun localContentHash(id: String): String? = withContext(Dispatchers.IO) {
+        mutex.withLock { currentHash(id) }
+    }
+
+    private suspend fun currentHash(id: String): String? {
+        val queue = queueDao.getQueueOnce(id) ?: return null
+        val songIds = queueDao.getSongMapsOnce(id).map { it.songId }
+        val order = if (queue.shuffled) readShuffleOrder(id) else null
+        return contentHash(queue.title, queue.sourceKey, queue.shuffled, songIds, order)
+    }
+
+    /** Records a local content edit if [id]'s content really changed. True if it did. */
+    private suspend fun markContentChanged(id: String): Boolean {
+        val hash = currentHash(id) ?: return false
+        val state = queueDao.getSyncState(id) ?: QueueSyncEntity(queueId = id)
+        if (state.localHash == hash && !state.deleted) return false
+        queueDao.upsertSyncState(
+            state.copy(
+                localHash = hash,
+                editedAt = System.currentTimeMillis(),
+                editedBy = syncDeviceName(context),
+                deleted = false,
+            ),
+        )
+        return true
+    }
+
+    private suspend fun markPlaybackChanged(id: String) {
+        if (queueDao.getQueueOnce(id) == null) return
+        val state = queueDao.getSyncState(id) ?: QueueSyncEntity(queueId = id)
+        queueDao.upsertSyncState(state.copy(playbackAt = System.currentTimeMillis()))
+    }
+
+    /** What to send for queue [id]: its content and hash, and its playback state. */
+    suspend fun exportForSync(id: String): Triple<QueueContent, String, PlaybackState>? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val queue = queueDao.getQueueOnce(id) ?: return@withLock null
+            val maps = queueDao.getSongMapsOnce(id)
+            val songs = maps.mapNotNull { map -> databaseDao.song(map.songId).first()?.toMediaMetadata()?.toSyncSong() }
+            if (songs.size != maps.size) return@withLock null
+            val content = QueueContent(
+                title = queue.title,
+                sourceKey = queue.sourceKey,
+                shuffled = queue.shuffled,
+                songs = songs,
+                shuffleOrder = if (queue.shuffled) readShuffleOrder(id) else null,
+                createdAt = queue.createdAt,
+            )
+            Triple(content, content.hash(), queue.toPlaybackState())
+        }
+    }
+
+    suspend fun exportPlayback(id: String): PlaybackState? = withContext(Dispatchers.IO) {
+        queueDao.getQueueOnce(id)?.toPlaybackState()
+    }
+
+    private fun QueueEntity.toPlaybackState() = PlaybackState(currentIndex, currentSongId, positionMs, lastPlayedAt)
+
+    /** Updates [id]'s sync state in place (after the server accepted a push, for example). */
+    suspend fun updateSyncState(id: String, transform: (QueueSyncEntity) -> QueueSyncEntity) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            queueDao.upsertSyncState(transform(queueDao.getSyncState(id) ?: QueueSyncEntity(queueId = id)))
+        }
+    }
+
+    /**
+     * Makes the local queue match the server's [remote] copy: creates or overwrites it, or deletes
+     * it for a tombstone. Unless [force] (the user chose the server's copy), this backs off and
+     * returns false if the queue was edited here since the sync decided, which the next sync sees
+     * as a conflict. A queue loaded in the player is reloaded from the database afterwards.
+     */
+    suspend fun applyRemote(remote: RemoteQueue, force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+        val applied = mutex.withLock {
+            val id = remote.id
+            val state = queueDao.getSyncState(id)
+            if (!force && state != null && !state.deleted && currentHash(id) != state.syncedHash) return@withLock false
+            val content = remote.content
+            if (remote.deleted || content == null) {
+                shuffleOrderFile(id).delete()
+                queueDao.deleteQueue(id)
+                queueDao.upsertSyncState(
+                    (state ?: QueueSyncEntity(queueId = id)).copy(
+                        baseRev = remote.rev,
+                        syncedHash = TOMBSTONE_HASH,
+                        localHash = null,
+                        editedAt = remote.editedAt,
+                        editedBy = remote.editedBy,
+                        deleted = true,
+                    ),
+                )
+                return@withLock true
+            }
+            val existing = queueDao.getQueueOnce(id)
+            val songs = content.songs.map { it.toMediaMetadata() }
+            ensureSongsExist(songs)
+            val takePlayback = remote.playback != null &&
+                remote.playbackAt > maxOf(state?.playbackAt ?: 0L, state?.playbackSyncedAt ?: 0L)
+            val playback = if (takePlayback) remote.playback else null
+            val lastPlayedAt = maxOf(existing?.lastPlayedAt ?: 0L, playback?.lastPlayedAt ?: 0L, if (existing == null) remote.editedAt else 0L)
+            queueDao.upsertQueue(
+                QueueEntity(
+                    id = id,
+                    title = content.title,
+                    sourceKey = content.sourceKey,
+                    shuffled = content.shuffled,
+                    currentIndex = playback?.currentIndex ?: existing?.currentIndex ?: 0,
+                    currentSongId = playback?.currentSongId ?: existing?.currentSongId ?: songs.firstOrNull()?.id,
+                    positionMs = playback?.positionMs ?: existing?.positionMs ?: 0L,
+                    songCount = songs.size,
+                    createdAt = existing?.createdAt ?: content.createdAt.takeIf { it > 0 } ?: remote.editedAt,
+                    lastPlayedAt = lastPlayedAt,
+                    archived = (existing?.archived ?: false) && !playedRecently(lastPlayedAt),
+                ),
+            )
+            queueDao.replaceSongMaps(id, songs.toSongMaps(id))
+            val order = content.shuffleOrder
+            if (content.shuffled && order != null && order.size == songs.size) writeShuffleOrder(id, order) else shuffleOrderFile(id).delete()
+            val hash = content.hash()
+            queueDao.upsertSyncState(
+                (state ?: QueueSyncEntity(queueId = id)).copy(
+                    baseRev = remote.rev,
+                    syncedHash = hash,
+                    localHash = hash,
+                    editedAt = remote.editedAt,
+                    editedBy = remote.editedBy,
+                    playbackAt = if (takePlayback) remote.playbackAt else state?.playbackAt ?: 0L,
+                    playbackSyncedAt = maxOf(state?.playbackSyncedAt ?: 0L, remote.playbackAt),
+                    deleted = false,
+                ),
+            )
+            true
+        }
+        if (applied) afterRemoteChange(remote.id)
+        applied
+    }
+
+    /** Takes the server's newer playback state for [remote]'s queue (never a conflict). */
+    suspend fun applyRemotePlayback(remote: RemoteQueue) = withContext(Dispatchers.IO) {
+        val playback = remote.playback ?: return@withContext
+        val applied = mutex.withLock {
+            val existing = queueDao.getQueueOnce(remote.id) ?: return@withLock false
+            val lastPlayedAt = maxOf(existing.lastPlayedAt, playback.lastPlayedAt)
+            val index = playback.currentIndex.coerceIn(0, maxOf(existing.songCount - 1, 0))
+            queueDao.updatePlaybackState(
+                id = remote.id,
+                index = index,
+                songId = playback.currentSongId,
+                positionMs = playback.positionMs,
+                timestamp = lastPlayedAt,
+            )
+            if (existing.archived && playedRecently(lastPlayedAt)) queueDao.unarchiveQueue(remote.id, lastPlayedAt)
+            val state = queueDao.getSyncState(remote.id) ?: QueueSyncEntity(queueId = remote.id)
+            queueDao.upsertSyncState(state.copy(playbackAt = remote.playbackAt, playbackSyncedAt = remote.playbackAt))
+            // Only a real move reloads the player. Reloading marks the queue played here, which
+            // the other device receives as newer; if that also reloaded, the two would echo forever.
+            existing.currentIndex != index || existing.currentSongId != playback.currentSongId ||
+                existing.positionMs != playback.positionMs
+        }
+        if (applied) afterRemoteChange(remote.id)
+    }
+
+    private fun playedRecently(lastPlayedAt: Long) =
+        lastPlayedAt > System.currentTimeMillis() - QueueEntity.ARCHIVE_AFTER_MS
+
+    private fun afterRemoteChange(id: String) {
+        if (!isLoadedInPlayer(id)) return
+        reloadPending[id] = System.currentTimeMillis() + RELOAD_GRACE_MS
+        _reloadRequests.tryEmit(id)
+    }
+
+    private companion object {
+        /** How long a stale player copy is kept from saving over a synced queue, at most. */
+        const val RELOAD_GRACE_MS = 5_000L
+    }
 }

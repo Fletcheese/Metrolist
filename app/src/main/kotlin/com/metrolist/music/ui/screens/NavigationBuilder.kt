@@ -456,4 +456,7 @@ fun NavGraphBuilder.navigationBuilder(
     composable("settings/android_auto") {
         AndroidAutoSettings(navController)
     }
+    composable("settings/queue_sync") {
+        com.metrolist.music.ui.screens.settings.QueueSyncSettings(navController)
+    }
 }

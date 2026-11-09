@@ -265,6 +265,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var listenTogetherManager: com.metrolist.music.listentogether.ListenTogetherManager
 
+    @Inject
+    lateinit var queueSyncRepository: com.metrolist.music.playback.queue.sync.QueueSyncRepository
+
     private lateinit var navController: NavHostController
     private var pendingIntent: Intent? = null
     private var latestVersionName by mutableStateOf(BuildConfig.BASE_VERSION_NAME)
@@ -317,6 +320,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        queueSyncRepository.onForeground()
         // Request notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -360,6 +364,7 @@ class MainActivity : FragmentActivity() {
         // running, so the host must keep reporting playback state to the LT server; detaching
         // the player listener here used to break LT for any host that wasn't staring at the
         // app the whole session. Full teardown happens in onDestroy() via safeUnbindService().
+        queueSyncRepository.onBackground()
         super.onStop()
     }
 
@@ -1465,6 +1470,8 @@ class MainActivity : FragmentActivity() {
                             }
                         }
                     }
+
+                    com.metrolist.music.ui.component.QueueSyncConflictDialog(queueSyncRepository)
 
                     if (!showChangelog.value) {
                         availableUpdate?.let { update ->

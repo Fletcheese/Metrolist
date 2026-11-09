@@ -15,6 +15,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import com.metrolist.music.db.entities.QueueEntity
 import com.metrolist.music.db.entities.QueueSongMapEntity
+import com.metrolist.music.db.entities.QueueSyncEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -109,4 +110,18 @@ interface QueueDao {
         if (maps.isNotEmpty()) insertSongMaps(maps)
         updateSongCount(queueId, maps.size)
     }
+
+    // FletchTunes queue sync (playback/queue/sync/): every queue, archived ones included, and
+    // the per-queue sync state that outlives a deleted queue as its tombstone.
+    @Query("SELECT * FROM queue")
+    suspend fun allQueuesOnce(): List<QueueEntity>
+
+    @Query("SELECT * FROM queue_sync WHERE queueId = :id")
+    suspend fun getSyncState(id: String): QueueSyncEntity?
+
+    @Query("SELECT * FROM queue_sync")
+    suspend fun allSyncStates(): List<QueueSyncEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSyncState(state: QueueSyncEntity)
 }

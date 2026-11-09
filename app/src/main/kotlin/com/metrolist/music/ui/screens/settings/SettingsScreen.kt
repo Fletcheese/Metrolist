@@ -155,6 +155,12 @@ fun SettingsScreen(
                     icon = painterResource(R.drawable.restore),
                     title = { Text(stringResource(R.string.backup_restore)) },
                     onClick = { navController.navigate("settings/backup_restore") }
+                ),
+                // FletchTunes: queues shared across devices through the fletchtunes-sync Worker.
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.sync),
+                    title = { Text(stringResource(R.string.queue_sync)) },
+                    onClick = { navController.navigate("settings/queue_sync") }
                 )
             )
         )

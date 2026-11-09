@@ -95,6 +95,17 @@ val HideVideoSongsKey = booleanPreferencesKey("hideVideoSongs")
 
 /** FletchTunes: New Episodes hides episodes already played (here or in YouTube). Default on. */
 val HidePlayedEpisodesKey = booleanPreferencesKey("hidePlayedEpisodes")
+
+/** FletchTunes queue sync (Settings > Queue sync): the fletchtunes-sync Worker and this device's name on it. */
+val QueueSyncEnabledKey = booleanPreferencesKey("queueSyncEnabled")
+val QueueSyncUrlKey = stringPreferencesKey("queueSyncUrl")
+val QueueSyncTokenKey = stringPreferencesKey("queueSyncToken")
+val QueueSyncDeviceNameKey = stringPreferencesKey("queueSyncDeviceName")
+/** Server time of the last pull; the next pull asks only for what changed after it. */
+val QueueSyncCursorKey = longPreferencesKey("queueSyncCursor")
+val QueueSyncStatusKey = stringPreferencesKey("queueSyncStatus")
+val QueueSyncLastSuccessKey = longPreferencesKey("queueSyncLastSuccess")
+const val DEFAULT_QUEUE_SYNC_URL = "https://fletchtunes-sync.fletcheese.workers.dev"
 val HideYoutubeShortsKey = booleanPreferencesKey("hideYoutubeShorts")
 val ShowArtistDescriptionKey = booleanPreferencesKey("showArtistDescription")
 val ShowArtistSubscriberCountKey = booleanPreferencesKey("showArtistSubscriberCount")

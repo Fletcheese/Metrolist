@@ -308,6 +308,10 @@ class MusicService :
     @Inject
     lateinit var queueBoard: com.metrolist.music.playback.queue.QueueBoard
 
+    /** Injected so queue sync is running whenever playback is, even with no screen open. */
+    @Inject
+    lateinit var queueSyncRepository: com.metrolist.music.playback.queue.sync.QueueSyncRepository
+
     /** Room-backed id of the currently active parallel queue (see QueueBoard), if any. */
     @Volatile
     private var activeQueueBoardId: String? = null
@@ -1351,6 +1355,12 @@ class MusicService :
                     clearPersistedQueueFiles()
                 }
             }
+        }
+
+        // Queue sync: when a sync changes the queue loaded here, reload it from the database.
+        queueBoard.playerAttached = true
+        scope.launch {
+            queueBoard.reloadRequests.collect { id -> reloadSyncedQueue(id) }
         }
 
         // Parallel queues: keep the active queue's in-song position fresh, so switching back to
@@ -3411,7 +3421,10 @@ class MusicService :
             recordActiveQueuePlayback()
         } else if (events.contains(Player.EVENT_IS_PLAYING_CHANGED) && !player.isPlaying) {
             recordActiveQueuePlayback()
+            // Queue sync: a pause is when another device is most likely to pick the queue up.
+            queueBoard.nudgeSync(com.metrolist.music.playback.queue.QueueBoard.SyncNudge.FLUSH)
         }
+        if (events.contains(Player.EVENT_IS_PLAYING_CHANGED)) queueBoard.playerPlaying = player.isPlaying
 
         if (events.containsAny(Player.EVENT_IS_PLAYING_CHANGED)) {
             updateWidgetUI(player.isPlaying)
@@ -4758,6 +4771,39 @@ class MusicService :
     }
 
     /**
+     * Queue sync changed queue [id] in the database (another device edited it, played it further,
+     * or deleted it). If it is the queue loaded here, load the synced copy, keeping the player
+     * playing or paused as it was; a deleted queue keeps playing, no longer tied to a saved queue.
+     */
+    private suspend fun reloadSyncedQueue(id: String) {
+        if (activeQueueBoardId != id) {
+            queueBoard.reloadDone(id)
+            return
+        }
+        val queue = queueBoard.queueFlow(id).first()
+        val songs = if (queue != null) queueBoard.loadSongs(id) else emptyList()
+        if (queue == null || songs.isEmpty()) {
+            activeQueueBoardId = null
+            queueBoard.reloadDone(id)
+            return
+        }
+        // Detach first, so playQueue() does not save the player's old copy over the synced one.
+        activeQueueBoardId = null
+        queueBoard.reloadDone(id)
+        playQueue(
+            ListQueue(
+                title = queue.title,
+                items = songs.map { it.toMediaItem() },
+                startIndex = queue.currentIndex.coerceIn(0, songs.size - 1),
+                position = queue.positionMs,
+                sourceKey = queue.sourceKey,
+            ),
+            playWhenReady = player.playWhenReady,
+            resumeBoardQueueId = id,
+        )
+    }
+
+    /**
      * Records where the active QueueBoard queue is up to (its play-order index, the current song
      * and the position within it) without rewriting its song list. Must run on the main thread.
      */
@@ -4970,6 +5016,8 @@ class MusicService :
 
     override fun onDestroy() {
         isRunning = false
+        queueBoard.playerAttached = false
+        queueBoard.playerPlaying = false
 
         if (!::player.isInitialized) {
             try {

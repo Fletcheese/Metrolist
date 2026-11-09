@@ -37,6 +37,7 @@ import com.metrolist.music.db.entities.PlaylistSongMapPreview
 import com.metrolist.music.db.entities.PodcastEntity
 import com.metrolist.music.db.entities.QueueEntity
 import com.metrolist.music.db.entities.QueueSongMapEntity
+import com.metrolist.music.db.entities.QueueSyncEntity
 import com.metrolist.music.db.entities.RecognitionHistory
 import com.metrolist.music.db.entities.RelatedSongMap
 import com.metrolist.music.db.entities.SearchHistory
@@ -115,13 +116,14 @@ class MusicDatabase(
         PodcastEntity::class,
         QueueEntity::class,
         QueueSongMapEntity::class,
+        QueueSyncEntity::class,
     ],
     views = [
         SortedSongArtistMap::class,
         SortedSongAlbumMap::class,
         PlaylistSongMapPreview::class,
     ],
-    version = 39,
+    version = 40,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3),
@@ -163,6 +165,8 @@ class MusicDatabase(
         // Purely additive: new `queue` and `queue_song_map` tables for the parallel-queues
         // feature. No column changes to existing tables, so a plain AutoMigration suffices.
         AutoMigration(from = 38, to = 39),
+        // FletchTunes queue sync: one new `queue_sync` table, nothing else changes.
+        AutoMigration(from = 39, to = 40),
     ],
 )
 @TypeConverters(Converters::class)
