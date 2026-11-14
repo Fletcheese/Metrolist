@@ -532,6 +532,10 @@ class MusicService :
     private var consecutivePlaybackErr = 0
     private var retryJob: Job? = null
     private var retryCount = 0
+    // Confirms a stream is actually stable before clearing its per-song retry count (see
+    // onPlaybackStateChanged's STATE_READY branch) rather than at the instant it reaches
+    // STATE_READY, which media3's own StuckPlayerDetector can immediately undo 10s later.
+    private var retryResetJob: Job? = null
     private var initialBufferRecoveryJob: Job? = null
     private var initialBufferRecoveryAttemptedMediaId: String? = null
     // True only when stopOnError() paused playback purely because of a network outage
@@ -3303,8 +3307,23 @@ class MusicService :
             retryJob?.cancel()
 
             player.currentMediaItem?.mediaId?.let { mediaId ->
-                resetRetryCount(mediaId)
-                Timber.tag(TAG).d("Playback successful for $mediaId, reset retry count")
+                // Reaching STATE_READY only means buffering succeeded, not that playback is
+                // actually progressing: media3's StuckPlayerDetector can still kill a "ready"
+                // stream ~10s later with no real frames decoded (ArrayIndexOutOfBoundsException
+                // in an extractor was the trigger seen in the field). Resetting the per-song
+                // retry count immediately here used to let a broken stream reach STATE_READY,
+                // get killed, retry, reach STATE_READY again, etc. forever, since the counter
+                // was wiped clean before the failure that mattered could ever accumulate.
+                // Wait past that detection window and confirm the same song is still ready.
+                retryResetJob?.cancel()
+                retryResetJob =
+                    scope.launch {
+                        delay(STUCK_PLAYER_CONFIRM_DELAY_MS)
+                        if (player.currentMediaItem?.mediaId == mediaId && player.playbackState == Player.STATE_READY) {
+                            resetRetryCount(mediaId)
+                            Timber.tag(TAG).d("Playback confirmed stable for $mediaId, reset retry count")
+                        }
+                    }
             }
             scheduleCrossfade()
         }
@@ -3693,6 +3712,16 @@ class MusicService :
             error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ||
             error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED
 
+    /**
+     * Checks if the error is media3's own StuckPlayerDetector killing a renderer that reached
+     * STATE_READY but never actually made progress (e.g. a corrupt extractor state left behind
+     * by a stream that threw mid-parse). Treated the same as a bad stream from the current
+     * client: mark it failed and retry with a different one, rather than just pausing forever.
+     */
+    private fun isStuckPlayerError(error: PlaybackException): Boolean =
+        error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT ||
+            (error.cause as? PlaybackException)?.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
+
     override fun onPlayerError(error: PlaybackException) {
         super.onPlayerError(error)
 
@@ -3707,6 +3736,11 @@ class MusicService :
             .tag(TAG)
             .w(error, "Player error occurred for $mediaId: errorCode=${error.errorCode}, message=${error.message}")
         reportException(error)
+
+        // Any new error means the stream that just reached STATE_READY was not actually
+        // healthy; don't let the delayed reset from onPlaybackStateChanged wipe its retry
+        // count out from under this failure.
+        retryResetJob?.cancel()
 
         if (mediaId != null && hasExceededRetryLimit(mediaId)) {
             Timber.tag(TAG).w("Song $mediaId has exceeded retry limit, skipping")
@@ -3774,6 +3808,12 @@ class MusicService :
                 handleStreamClientError(mediaId, failedStreamClient)
                 return
             }
+
+            isStuckPlayerError(error) -> {
+                Timber.tag(TAG).d("Stuck-player timeout detected (${error.errorCode}), trying the next client")
+                handleStreamClientError(mediaId, failedStreamClient)
+                return
+            }
         }
 
         if (dataStore.get(AutoSkipNextOnErrorKey, false)) {
@@ -3829,10 +3869,29 @@ class MusicService :
 
     /**
      * Marks a song as failed to prevent further retry attempts.
+     *
+     * FletchTunes: every give-up path (onPlayerError's own retry-limit check, and
+     * refreshStreamAndRetry's) routes through here, so this is also where the user finds out
+     * playback gave up — previously it just paused/skipped silently with nothing on screen.
      */
     private fun markSongAsFailed(mediaId: String) {
         recentlyFailedSongs.add(mediaId)
         currentMediaIdRetryCount.remove(mediaId)
+
+        val title =
+            player.currentMediaItem
+                ?.takeIf { it.mediaId == mediaId }
+                ?.mediaMetadata
+                ?.title
+                ?.toString()
+        Handler(Looper.getMainLooper()).post {
+            Toast
+                .makeText(
+                    this@MusicService,
+                    getString(R.string.playback_failed_toast, title ?: mediaId),
+                    Toast.LENGTH_LONG,
+                ).show()
+        }
 
         failedSongsClearJob?.cancel()
         failedSongsClearJob =
@@ -5834,6 +5893,9 @@ class MusicService :
 
         private const val INITIAL_BUFFER_RECOVERY_DELAY_MS = 15_000L
         private const val INITIAL_BUFFER_RECOVERY_POSITION_MS = 5_000L
+        // media3's built-in StuckPlayerDetector raises its own PlaybackException after 10s of
+        // no progress; wait a bit past that before trusting STATE_READY as real success.
+        private const val STUCK_PLAYER_CONFIRM_DELAY_MS = 12_000L
         private const val TAG = "MusicService"
 
         @Volatile

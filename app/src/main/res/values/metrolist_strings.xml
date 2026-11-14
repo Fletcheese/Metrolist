@@ -933,6 +933,9 @@
     <string name="android_auto_search_local_songs_limit">Songs search limit</string>
     <string name="android_auto_search_local_songs_limit_desc">Limit the number of local songs shown in the search results. It is recommended to not set unlimited to prevent memory crashes</string>
 
+    <!-- FletchTunes: playback giving up on a song/episode after exhausting retries -->
+    <string name="playback_failed_toast">Couldn\'t play \"%1$s\" — gave up after repeated errors</string>
+
     <!-- Stats time transfer -->
     <string name="time_transfer_title">Time transfer</string>
     <string name="time_transfer_warning">WARNING: This action cannot be undone once completed. Create a backup before proceeding. Only songs with at least one registered play are eligible</string>
