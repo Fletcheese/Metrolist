@@ -213,6 +213,8 @@ import com.metrolist.music.playback.queues.filterVideoSongs
 import com.metrolist.music.constants.LoudnessLevel
 import com.metrolist.music.constants.LoudnessLevelKey
 import com.metrolist.music.utils.CoilBitmapLoader
+import com.metrolist.music.utils.EpisodeProgress
+import com.metrolist.music.utils.EpisodeResumeHints
 import com.metrolist.music.utils.NetworkConnectivityObserver
 import com.metrolist.music.utils.ScrobbleManager
 import com.metrolist.music.utils.SyncUtils
@@ -3076,24 +3078,40 @@ class MusicService :
         }
     }
 
+    /**
+     * Resumes an episode from the same merged position its listened marker shows: the furthest of
+     * the locally saved position and YouTube's playbackProgress (remembered from the list it was
+     * tapped in, see EpisodeResumeHints). An episode the marker calls "Played" starts from the top.
+     */
     private fun restoreEpisodePosition(episodeId: String) {
         scope.launch(Dispatchers.IO + SilentHandler) {
-            val savedPosition = database.getPlaybackPosition(episodeId)
-            val durationMs = (database.getDuration(episodeId) ?: 0) * 1000L
-            // A finished episode (saved at or within 5 s of its end) starts again from the top.
-            if (savedPosition != null && durationMs > 0 && savedPosition >= durationMs - 5_000L) {
-                Timber.tag(TAG).d("Episode $episodeId already finished; playing from the start")
-                return@launch
-            }
-            if (savedPosition != null && savedPosition > 0) {
-                withContext(Dispatchers.Main) {
-                    val playerDuration = player.duration
-                    if (playerDuration != C.TIME_UNSET && savedPosition >= playerDuration - 5_000L) {
-                        Timber.tag(TAG).d("Episode $episodeId already finished; playing from the start")
-                    } else if (player.currentMediaItem?.mediaId == episodeId) {
-                        player.seekTo(savedPosition)
-                        Timber.tag(TAG).d("Restored episode position: $episodeId to ${savedPosition}ms")
-                    }
+            val savedPosition = database.getPlaybackPosition(episodeId)?.takeIf { it > 0 }
+            val dbDurationMs = (database.getDuration(episodeId) ?: 0) * 1000L
+            val youtubePercent = EpisodeResumeHints.youtubePercent(episodeId)?.takeIf { it > 0 }
+            if (savedPosition == null && youtubePercent == null) return@launch
+            withContext(Dispatchers.Main) {
+                // YouTube gives a percentage, so it needs the length; list items from a show page
+                // carry none, so wait briefly for the player to learn it.
+                var durationMs = dbDurationMs.takeIf { it > 0 } ?: player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
+                var waited = 0
+                while (durationMs == null && waited < 10_000 && player.currentMediaItem?.mediaId == episodeId) {
+                    delay(200)
+                    waited += 200
+                    durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
+                }
+                if (player.currentMediaItem?.mediaId != episodeId) return@withContext
+                val merged = EpisodeProgress.percent(youtubePercent, savedPosition, durationMs?.let { (it / 1000).toInt() })
+                if (EpisodeProgress.isPlayed(merged) || (savedPosition != null && durationMs != null && savedPosition >= durationMs - 5_000L)) {
+                    Timber.tag(TAG).d("Episode $episodeId already played ($merged%); playing from the start")
+                    return@withContext
+                }
+                val youtubeMs = if (youtubePercent != null && durationMs != null) durationMs * youtubePercent / 100 else 0L
+                val target = maxOf(savedPosition ?: 0L, youtubeMs)
+                if (target > 0) {
+                    player.seekTo(target)
+                    Timber.tag(TAG).d(
+                        "Restored episode position: $episodeId to ${target}ms (local=${savedPosition}ms, youtube=$youtubePercent% of ${durationMs}ms)",
+                    )
                 }
             }
         }
