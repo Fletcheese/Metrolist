@@ -500,7 +500,10 @@ class MainActivity : FragmentActivity() {
         downloadUtil: DownloadUtil,
         syncUtils: SyncUtils,
     ) {
-        val checkForUpdates by rememberPreference(CheckForUpdatesKey, defaultValue = true)
+        // Default off: upstream v14.0.0 replaces the app with a KMP rewrite the fork hasn't
+        // ported to, so the update nag offers something not worth taking. Manual check in
+        // Settings > Updater still works.
+        val checkForUpdates by rememberPreference(CheckForUpdatesKey, defaultValue = false)
         var availableUpdate by remember { mutableStateOf<AvailableUpdate?>(null) }
 
         if (BuildConfig.UPDATER_AVAILABLE) {
