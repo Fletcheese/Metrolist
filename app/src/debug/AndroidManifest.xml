@@ -7,6 +7,11 @@
             android:name="com.metrolist.music.playback.queue.sync.QueueSyncDebugReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+        <!-- FletchTunes: adb-only timing probe for podcast show pages (PodcastProbeDebugReceiver). -->
+        <receiver
+            android:name="com.metrolist.music.debug.PodcastProbeDebugReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 
 </manifest>

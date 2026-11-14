@@ -18,9 +18,9 @@ import com.metrolist.music.constants.HidePlayedEpisodesKey
 import com.metrolist.music.constants.HideVideoSongsKey
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.utils.EpisodeProgress
+import com.metrolist.music.utils.episodeProgress
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import com.metrolist.music.utils.dataStore
@@ -80,23 +80,11 @@ class OnlinePlaylistViewModel @Inject constructor(
     val episodeProgress: kotlinx.coroutines.flow.StateFlow<Map<String, Int>> =
         playlistSongs
             .flatMapLatest { songs ->
-                val episodes = songs.filter { it.isEpisode }
-                if (episodes.isEmpty()) {
-                    flowOf(emptyMap())
-                } else {
-                    database.episodePositions(episodes.map { it.id }).map { rows ->
-                        val local = rows.associateBy { it.id }
-                        episodes.mapNotNull { song ->
-                            val row = local[song.id]
-                            EpisodeProgress
-                                .percent(
-                                    youtubePercent = song.playbackProgressPercent,
-                                    localPositionMs = row?.playbackPosition,
-                                    durationSeconds = song.duration ?: row?.duration,
-                                )?.let { song.id to it }
-                        }.toMap()
-                    }
-                }
+                database.episodeProgress(
+                    songs
+                        .filter { it.isEpisode }
+                        .map { EpisodeProgress.Ref(it.id, it.playbackProgressPercent, it.duration) },
+                )
             }.flowOn(Dispatchers.IO)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 

@@ -33,7 +33,6 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -96,6 +95,7 @@ import com.metrolist.music.db.entities.PlaylistSongMap
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.queues.YouTubePlaylistQueue
 import com.metrolist.music.ui.component.ExpandableText
+import com.metrolist.music.ui.component.HidePlayedChip
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.component.LocalMenuState
 import com.metrolist.music.ui.component.YouTubeListItem
@@ -156,7 +156,7 @@ fun OnlinePlaylistScreen(
             if (!hidePlayed) {
                 songs
             } else {
-                songs.filter { it.id == playingId || !EpisodeProgress.isPlayed(episodeProgress[it.id]) }
+                EpisodeProgress.unplayed(songs, episodeProgress, playingId) { it.id }
             }
         }
     val hiddenPlayedCount = songs.size - visibleSongs.size
@@ -282,30 +282,11 @@ fun OnlinePlaylistScreen(
 
                     if (viewModel.isNewEpisodes) {
                         item(key = "hide_played_toggle") {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                            ) {
-                                FilterChip(
-                                    selected = hidePlayedEpisodes,
-                                    onClick = { viewModel.setHidePlayedEpisodes(!hidePlayedEpisodes) },
-                                    label = { Text("Hide played") },
-                                    leadingIcon =
-                                        if (hidePlayedEpisodes) {
-                                            { Icon(painterResource(R.drawable.check), null) }
-                                        } else {
-                                            null
-                                        },
-                                )
-                                if (hidePlayedEpisodes && hiddenPlayedCount > 0) {
-                                    Spacer(Modifier.width(12.dp))
-                                    Text(
-                                        text = "$hiddenPlayedCount hidden",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
+                            HidePlayedChip(
+                                selected = hidePlayedEpisodes,
+                                hiddenCount = hiddenPlayedCount,
+                                onClick = { viewModel.setHidePlayedEpisodes(!hidePlayedEpisodes) },
+                            )
                         }
                     }
 

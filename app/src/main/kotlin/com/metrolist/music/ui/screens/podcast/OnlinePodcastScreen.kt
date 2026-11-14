@@ -79,7 +79,9 @@ import com.metrolist.music.R
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.extensions.toMediaItem
 import com.metrolist.music.playback.queues.ListQueue
+import com.metrolist.music.ui.component.HidePlayedChip
 import com.metrolist.music.ui.component.IconButton
+import com.metrolist.music.utils.EpisodeProgress
 import com.metrolist.music.ui.component.LocalMenuState
 import com.metrolist.music.ui.component.YouTubeListItem
 import com.metrolist.music.ui.menu.YouTubeSongMenu
@@ -112,9 +114,20 @@ fun OnlinePodcastScreen(
     var isSearching by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
 
-    val filteredEpisodes = remember(episodes, query) {
-        if (query.text.isEmpty()) episodes
-        else episodes.filter { episode ->
+    // FletchTunes listened marker and "Hide played", as on New Episodes. The episode playing now
+    // stays listed even once it counts as played, so it doesn't vanish mid-listen.
+    val episodeProgress by viewModel.episodeProgress.collectAsStateWithLifecycle()
+    val hidePlayedEpisodes by viewModel.hidePlayedEpisodes.collectAsStateWithLifecycle()
+    val playingId = mediaMetadata?.id
+    val visibleEpisodes = remember(episodes, hidePlayedEpisodes, episodeProgress, playingId) {
+        if (!hidePlayedEpisodes) episodes
+        else EpisodeProgress.unplayed(episodes, episodeProgress, playingId) { it.id }
+    }
+    val hiddenPlayedCount = episodes.size - visibleEpisodes.size
+
+    val filteredEpisodes = remember(visibleEpisodes, query) {
+        if (query.text.isEmpty()) visibleEpisodes
+        else visibleEpisodes.filter { episode ->
             episode.title.contains(query.text, ignoreCase = true) ||
                 episode.author?.name?.contains(query.text, ignoreCase = true) == true
         }
@@ -185,12 +198,23 @@ fun OnlinePodcastScreen(
                         }
                     }
 
+                    if (episodes.isNotEmpty()) {
+                        item(key = "hide_played_toggle") {
+                            HidePlayedChip(
+                                selected = hidePlayedEpisodes,
+                                hiddenCount = hiddenPlayedCount,
+                                onClick = { viewModel.setHidePlayedEpisodes(!hidePlayedEpisodes) },
+                            )
+                        }
+                    }
+
                     itemsIndexed(
                         items = filteredEpisodes,
                         key = { _, episode -> episode.id }
                     ) { index, episode ->
                         YouTubeListItem(
                             item = episode,
+                            episodeProgressPercent = episodeProgress[episode.id],
                             isActive = mediaMetadata?.id == episode.id,
                             isPlaying = isPlaying,
                             modifier = Modifier

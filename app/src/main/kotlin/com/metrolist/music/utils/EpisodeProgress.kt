@@ -5,6 +5,8 @@
 
 package com.metrolist.music.utils
 
+import com.metrolist.music.db.entities.EpisodePosition
+
 /**
  * FletchTunes: how far a podcast episode has been listened to, merging YouTube's own
  * playbackProgress (which covers listening in the YouTube / YouTube Music apps) with the position
@@ -34,6 +36,41 @@ object EpisodeProgress {
     }
 
     fun isPlayed(percent: Int?): Boolean = percent != null && percent >= PLAYED_PERCENT
+
+    /** One episode as a list knows it: its id, YouTube's playbackProgress, and its length. */
+    data class Ref(
+        val id: String,
+        val youtubePercent: Int?,
+        val durationSeconds: Int?,
+    )
+
+    /**
+     * Episode id to merged 0-100 progress for a list of episodes, given the local saved positions
+     * for them. Episodes with no progress from either source are left out.
+     */
+    fun merge(
+        episodes: List<Ref>,
+        local: List<EpisodePosition>,
+    ): Map<String, Int> {
+        val byId = local.associateBy { it.id }
+        return episodes
+            .mapNotNull { episode ->
+                val row = byId[episode.id]
+                percent(
+                    youtubePercent = episode.youtubePercent,
+                    localPositionMs = row?.playbackPosition,
+                    durationSeconds = episode.durationSeconds?.takeIf { it > 0 } ?: row?.duration,
+                )?.let { episode.id to it }
+            }.toMap()
+    }
+
+    /** The "Hide played" filter: drops played episodes, but never the one playing now. */
+    fun <T> unplayed(
+        items: List<T>,
+        progress: Map<String, Int>,
+        playingId: String?,
+        id: (T) -> String,
+    ): List<T> = items.filter { id(it) == playingId || !isPlayed(progress[id(it)]) }
 
     private fun localPercent(
         positionMs: Long?,
