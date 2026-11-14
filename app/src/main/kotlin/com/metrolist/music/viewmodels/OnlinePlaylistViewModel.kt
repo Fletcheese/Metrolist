@@ -155,6 +155,11 @@ class OnlinePlaylistViewModel @Inject constructor(
                         )
                         playlistSongs.value = applySongFilters(episodes)
                         _isLoading.value = false
+                        // FletchTunes: the list is already showing; fill missing show names after.
+                        if (episodes.any { it.artists.isEmpty() }) {
+                            val filled = YouTube.fillEpisodeAuthors(episodes)
+                            playlistSongs.value = applySongFilters(filled)
+                        }
                     }.onFailure { throwable ->
                         _error.value = throwable.message ?: "Failed to load new episodes"
                         _isLoading.value = false

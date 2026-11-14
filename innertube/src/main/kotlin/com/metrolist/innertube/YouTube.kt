@@ -2594,22 +2594,56 @@ object YouTube {
                 }
             }
 
-            Timber.d("[PODCAST_API] newEpisodes SUCCESS: ${episodesList.size} items, ${episodesList.count { it.playbackProgressPercent != null }} with YouTube progress")
-            coroutineScope {
+            // FletchTunes: return straight away. Show names the browse lacks used to be looked up
+            // here, one getMediaInfo per episode, which held the list back about 8 s; callers now
+            // fill them afterwards with fillEpisodeAuthors. Names found earlier come from the cache.
+            val episodes =
                 episodesList.map { episode ->
-                    async {
-                        if (episode.artists.isNotEmpty()) return@async episode
-                        val mediaInfo = innerTube.getMediaInfo(episode.id).getOrNull()
-                        if (mediaInfo?.author != null) {
-                            episode.copy(artists = listOf(Artist(mediaInfo.author, mediaInfo.authorId)))
-                        } else episode
+                    if (episode.artists.isNotEmpty()) {
+                        episode
+                    } else {
+                        episodeAuthorCache[episode.id]?.let { episode.copy(artists = listOf(it)) } ?: episode
                     }
-                }.awaitAll()
-            }
+                }
+            Timber.d(
+                "[PODCAST_API] newEpisodes SUCCESS: ${episodes.size} items, ${episodes.count { it.playbackProgressPercent != null }} with YouTube progress, " +
+                    "${episodes.count { it.artists.isEmpty() }} still without a show name",
+            )
+            episodes
         }.also { result ->
             result.onFailure { e -> Timber.e(e, "[PODCAST_API] newEpisodes FAILED") }
         }
     }
+
+    /** FletchTunes: show names found for New Episodes, by video id, for this process's lifetime. */
+    private val episodeAuthorCache = java.util.concurrent.ConcurrentHashMap<String, Artist>()
+
+    /** FletchTunes: episodes whose channel lookup worked but found none, so they aren't asked again. */
+    private val episodesWithoutOwner: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * FletchTunes: fills in the show name of each episode that has none, with one channel lookup
+     * per episode (in parallel, cached). Meant to run after the list is already on screen.
+     */
+    suspend fun fillEpisodeAuthors(episodes: List<SongItem>): List<SongItem> =
+        coroutineScope {
+            episodes
+                .map { episode ->
+                    async {
+                        if (episode.artists.isNotEmpty()) return@async episode
+                        episodeAuthorCache[episode.id]?.let { return@async episode.copy(artists = listOf(it)) }
+                        if (episode.id in episodesWithoutOwner) return@async episode
+                        val result = innerTube.videoOwner(episode.id)
+                        // A lookup that worked but found no channel (an RSS episode, say) won't
+                        // find one next time either; a failed lookup is tried again.
+                        if (result.isSuccess && result.getOrNull() == null) episodesWithoutOwner.add(episode.id)
+                        val owner = result.getOrNull() ?: return@async episode
+                        val artist = Artist(owner.first, owner.second)
+                        episodeAuthorCache[episode.id] = artist
+                        episode.copy(artists = listOf(artist))
+                    }
+                }.awaitAll()
+        }
 
     /**
      * Fetch the RDPN "New Episodes" playlist info (title + thumbnail).

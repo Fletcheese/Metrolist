@@ -532,6 +532,33 @@ class InnerTube(
         return this
     }
 
+    /**
+     * FletchTunes: just a video's channel name and id, from one WEB next call. Unlike
+     * [getMediaInfo] it skips the Return YouTube Dislike lookup, which New Episodes never shows.
+     */
+    suspend fun videoOwner(videoId: String): Result<Pair<String, String?>?> =
+        runCatching {
+            val owner =
+                next(
+                    client = YouTubeClient.WEB,
+                    videoId = videoId,
+                    playlistId = null,
+                    playlistSetVideoId = null,
+                    index = null,
+                    params = null,
+                    continuation = null,
+                ).body<NextResponse>()
+                    .contents.twoColumnWatchNextResults
+                    ?.results
+                    ?.results
+                    ?.content
+                    ?.find { it?.videoSecondaryInfoRenderer != null }
+                    ?.videoSecondaryInfoRenderer
+                    ?.owner
+                    ?.videoOwnerRenderer
+            owner?.title?.runs?.firstOrNull()?.text?.let { it to owner.navigationEndpoint?.browseEndpoint?.browseId }
+        }
+
     private suspend fun returnYouTubeDislike(videoId: String) =
         withRetry {
             httpClient.get("https://returnyoutubedislikeapi.com/Votes?videoId=$videoId") {

@@ -39,7 +39,6 @@ class PodcastEnrichmentTest {
                         else -> """{"contents":{}}"""
                     }
                 }
-                request.url.host == "returnyoutubedislikeapi.com" -> "{}"
                 else -> error("Unexpected request: ${request.url.encodedPath}")
             }
             respond(response, headers = headersOf(HttpHeaders.ContentType, "application/json"))
@@ -56,7 +55,13 @@ class PodcastEnrichmentTest {
             try {
                 clientField.set(innerTube, client)
                 transportField.set(innerTube, transportField.get(InnerTube(client)))
-                val episodes = YouTube.newEpisodes().getOrThrow()
+                // The list comes back from the browse alone, with no per-episode lookups.
+                val listed = YouTube.newEpisodes().getOrThrow()
+                assertEquals(listOf("missing", "linked", "unknown", "failed"), listed.map { it.id })
+                assertTrue(lookedUp.isEmpty())
+                assertTrue(listed[0].artists.isEmpty())
+
+                val episodes = YouTube.fillEpisodeAuthors(listed)
                 assertEquals(listOf("missing", "linked", "unknown", "failed"), episodes.map { it.id })
                 assertEquals(listOf(Artist("Resolved Host", "UChost")), episodes[0].artists)
                 assertEquals(listOf(Artist("Linked Host", "UClinked")), episodes[1].artists)
@@ -65,6 +70,17 @@ class PodcastEnrichmentTest {
                 assertEquals(setOf("missing", "unknown", "failed"), lookedUp.toSet())
                 assertEquals(1, lookedUp.count { it == "missing" })
                 assertEquals(1, lookedUp.count { it == "unknown" })
+
+                // A name found once is cached: the next open shows it straight from the browse.
+                val reopened = YouTube.newEpisodes().getOrThrow()
+                assertEquals(listOf(Artist("Resolved Host", "UChost")), reopened[0].artists)
+                assertEquals(1, lookedUp.count { it == "missing" })
+
+                // "No channel" is remembered too; a failed lookup is tried again.
+                val failedBefore = lookedUp.count { it == "failed" }
+                YouTube.fillEpisodeAuthors(reopened)
+                assertEquals(1, lookedUp.count { it == "unknown" })
+                assertTrue(lookedUp.count { it == "failed" } > failedBefore)
             } finally {
                 clientField.set(innerTube, originalClient)
                 transportField.set(innerTube, originalTransport)
