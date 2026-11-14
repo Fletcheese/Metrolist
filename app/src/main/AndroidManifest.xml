@@ -262,6 +262,10 @@
             android:exported="false" />
 
         <receiver
+            android:name=".playback.queue.sync.QueueSyncAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".playback.alarm.MusicAlarmReceiver"
             android:enabled="true"
             android:exported="false" />

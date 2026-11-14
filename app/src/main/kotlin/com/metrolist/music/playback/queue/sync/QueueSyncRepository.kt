@@ -26,6 +26,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -56,6 +57,8 @@ data class SyncConflict(
  *  - the app goes to the background, and on "Sync now";
  *  - after a failure, backing off from [RETRY_MIN_MS] to [RETRY_MAX_MS].
  * Position updates during playback are saved locally every 10 s and only sent on those triggers.
+ * In the background each scheduled sync is also backed by an allow-while-idle alarm
+ * ([QueueSyncAlarm]), so it still runs on time, with network, while the phone dozes.
  *
  * Each sync pulls what changed on the server since the last one, then for every queue applies
  * [decideContent] and [decidePlayback]. See QueueSyncMerge.kt for the rules.
@@ -74,6 +77,9 @@ class QueueSyncRepository @Inject constructor(
     private val lock = Any()
     private var dueAt = Long.MAX_VALUE
     @Volatile private var foreground = false
+    @Volatile private var syncing = false
+    /** Counts finished sync attempts, so an alarm can wait for the one it started. */
+    private val attempts = MutableStateFlow(0L)
     private var failures = 0
 
     private enum class Choice { LOCAL, REMOTE }
@@ -118,8 +124,27 @@ class QueueSyncRepository @Inject constructor(
     }
 
     private fun schedule(delayMs: Long) {
-        synchronized(lock) { dueAt = minOf(dueAt, System.currentTimeMillis() + delayMs) }
+        val due = synchronized(lock) { minOf(dueAt, System.currentTimeMillis() + delayMs).also { dueAt = it } }
         wake.trySend(Unit)
+        // In the background the coroutine timer can't be trusted (Doze stops it and blocks the
+        // network), so an allow-while-idle alarm backs it up. See QueueSyncAlarm.
+        if (!foreground) QueueSyncAlarm.set(context, due)
+    }
+
+    /**
+     * Called by [QueueSyncAlarmReceiver]: runs the sync that is due now, inside the alarm's short
+     * network window, and returns once it has finished (or after [ALARM_WINDOW_MS]).
+     */
+    suspend fun runDueFromAlarm() {
+        val pending = synchronized(lock) { dueAt != Long.MAX_VALUE }
+        if (!pending && !syncing) return
+        val before = attempts.value
+        Timber.tag(TAG).d("Alarm: running the due sync (pending=$pending, syncing=$syncing)")
+        if (pending) {
+            synchronized(lock) { dueAt = minOf(dueAt, System.currentTimeMillis()) }
+            wake.trySend(Unit)
+        }
+        withTimeoutOrNull(ALARM_WINDOW_MS) { attempts.first { it > before } }
     }
 
     private suspend fun runLoop() {
@@ -130,20 +155,25 @@ class QueueSyncRepository @Inject constructor(
                 wait > 0 -> withTimeoutOrNull(wait) { wake.receive() }
                 else -> {
                     synchronized(lock) { dueAt = Long.MAX_VALUE }
+                    syncing = true
                     val ok = try {
                         syncOnce()
                     } catch (e: Exception) {
                         Timber.tag(TAG).w(e, "Queue sync failed")
                         setStatus("Failed: ${e.message ?: e.javaClass.simpleName}")
                         false
+                    } finally {
+                        syncing = false
                     }
+                    attempts.value++
                     if (ok) {
                         failures = 0
                         if (foreground) schedule(PERIOD_MS)
                     } else {
                         failures++
                         if (foreground || failures <= BACKGROUND_RETRIES) {
-                            schedule(minOf(RETRY_MIN_MS shl minOf(failures - 1, 10), RETRY_MAX_MS))
+                            val first = if (foreground) RETRY_MIN_MS else BACKGROUND_RETRY_MIN_MS
+                            schedule(minOf(first shl minOf(failures - 1, 10), RETRY_MAX_MS))
                         }
                     }
                 }
@@ -360,10 +390,15 @@ class QueueSyncRepository @Inject constructor(
 
     private companion object {
         const val TAG = "QueueSync"
-        const val PERIOD_MS = 3 * 60_000L
+        /** While the app is open, so an edit on another device shows up here within a minute. */
+        const val PERIOD_MS = 60_000L
         const val EDIT_DELAY_MS = 5_000L
         const val FLUSH_DELAY_MS = 2_000L
         const val RETRY_MIN_MS = 30_000L
+        /** First retry in the background; an alarm delivers it, so it gets a network window. */
+        const val BACKGROUND_RETRY_MIN_MS = 10_000L
+        /** About how long Android keeps the network open after an allow-while-idle alarm. */
+        const val ALARM_WINDOW_MS = 9_000L
         const val RETRY_MAX_MS = 15 * 60_000L
         const val BACKGROUND_RETRIES = 4
         /** Re-pull a minute of overlap, in case a write landed just as the last pull read. */
