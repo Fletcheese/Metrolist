@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -63,21 +62,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
-import coil3.compose.AsyncImage
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.AlbumItem
 import com.metrolist.innertube.models.ArtistItem
@@ -92,7 +86,6 @@ import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
-import com.metrolist.music.constants.AppBarHeight
 import com.metrolist.music.constants.HideExplicitKey
 import com.metrolist.music.constants.ShowArtistDescriptionKey
 import com.metrolist.music.constants.ShowArtistSubscriberCountKey
@@ -122,9 +115,7 @@ import com.metrolist.music.ui.menu.YouTubeArtistMenu
 import com.metrolist.music.ui.menu.YouTubePlaylistMenu
 import com.metrolist.music.ui.menu.YouTubeSongMenu
 import com.metrolist.music.ui.utils.backToMain
-import com.metrolist.music.ui.utils.fadingEdge
 import com.metrolist.music.ui.utils.isScrollingUp
-import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.utils.ArtistNameAliases
 import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.viewmodels.ArtistViewModel
@@ -168,16 +159,11 @@ fun ArtistScreen(
     val lazyListState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showLocal by rememberSaveable { mutableStateOf(false) }
-    val density = LocalDensity.current
 
-    // Calculate the offset value outside of the offset lambda
-    val systemBarsTopPadding = WindowInsets.systemBars.asPaddingValues().calculateTopPadding()
-    val headerOffset =
-        with(density) {
-            -(systemBarsTopPadding + AppBarHeight).roundToPx()
-        }
-
-    val transparentAppBar by remember {
+    // FletchTunes: no header art. The list's top content padding (LocalPlayerAwareWindowInsets)
+    // is already the status bar plus AppBarHeight, so the name and buttons start just below the
+    // solid app bar, and the bar shows the artist name only once the header row scrolls away.
+    val headerInView by remember {
         derivedStateOf {
             lazyListState.firstVisibleItemIndex == 0 && lazyListState.firstVisibleItemScrollOffset < 100
         }
@@ -203,32 +189,7 @@ fun ArtistScreen(
         ) {
             if (artistPage == null && !showLocal) {
                 item(key = "shimmer") {
-                    ShimmerHost(
-                        modifier =
-                            Modifier
-                                .offset {
-                                    IntOffset(x = 0, y = headerOffset)
-                                },
-                    ) {
-                        // Artist Image Placeholder
-                        Box(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(1.1f),
-                        ) {
-                            Spacer(
-                                modifier =
-                                    Modifier
-                                        .fillMaxSize()
-                                        .shimmer()
-                                        .background(MaterialTheme.colorScheme.onSurface)
-                                        .fadingEdge(
-                                            top = systemBarsTopPadding + AppBarHeight,
-                                            bottom = 200.dp,
-                                        ),
-                            )
-                        }
+                    ShimmerHost {
                         // Artist Name and Controls Section
                         Column(
                             modifier =
@@ -295,54 +256,13 @@ fun ArtistScreen(
                 }
             } else {
                 item(key = "header") {
-                    val thumbnail = artistPage?.artist?.thumbnail ?: libraryArtist?.artist?.thumbnailUrl
-
                     Box {
-                        // Artist Image with offset
-                        if (thumbnail != null) {
-                            Box(
-                                modifier =
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(1f)
-                                        .offset {
-                                            IntOffset(x = 0, y = headerOffset)
-                                        },
-                            ) {
-                                AsyncImage(
-                                    model = thumbnail.resize(1200, 1200),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier =
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .align(Alignment.TopCenter)
-                                            .fadingEdge(
-                                                bottom = 200.dp,
-                                            ),
-                                )
-                            }
-                        }
-
-                        // Artist Name and Controls Section - positioned at bottom of image
+                        // Artist Name and Controls Section (no header art in FletchTunes)
                         Column(
                             modifier =
                                 Modifier
                                     .fillMaxWidth()
-                                    .padding(
-                                        top =
-                                            if (thumbnail != null) {
-                                                // Position content at the bottom part of the image
-                                                // Using screen width to calculate aspect ratio height minus overlap
-                                                LocalResources.current.displayMetrics.widthPixels.let { screenWidth ->
-                                                    with(density) {
-                                                        ((screenWidth / 1.2f) - 144).toDp()
-                                                    }
-                                                }
-                                            } else {
-                                                16.dp
-                                            },
-                                    ),
+                                    .padding(top = 16.dp),
                         ) {
                             Column(
                                 modifier =
@@ -1014,7 +934,7 @@ fun ArtistScreen(
     }
 
     TopAppBar(
-        title = { if (!transparentAppBar) Text(displayArtistName.orEmpty()) },
+        title = { if (!headerInView) Text(displayArtistName.orEmpty()) },
         navigationIcon = {
             IconButton(
                 onClick = navController::navigateUp,
@@ -1043,11 +963,6 @@ fun ArtistScreen(
                 )
             }
         },
-        colors =
-            if (transparentAppBar) {
-                TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-            } else {
-                TopAppBarDefaults.topAppBarColors()
-            },
+        colors = TopAppBarDefaults.topAppBarColors(),
     )
 }
