@@ -33,6 +33,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -102,6 +104,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastAny
@@ -856,6 +859,9 @@ class MainActivity : FragmentActivity() {
                     label = "navBarHeight",
                 )
 
+                // FletchTunes: the navigation rail's measured width (start inset included), set by the rail.
+                var railWidth by remember { mutableStateOf(NavigationBarHeight) }
+
                 val playerBottomSheetState =
                     rememberBottomSheetState(
                         dismissedBound = 0.dp,
@@ -1299,11 +1305,24 @@ class MainActivity : FragmentActivity() {
                                 Box {
                                     if (currentRoute != "wrapped") {
                                         if (activePlayerConnection != null) {
-                                            BottomSheetPlayer(
-                                                state = playerBottomSheetState,
-                                                navController = navController,
-                                                pureBlack = pureBlack,
-                                            )
+                                            // FletchTunes: the player (mini and expanded) takes only the area
+                                            // right of the navigation rail, so the rail stays visible and
+                                            // tappable with a song open; a rail tap collapses the player
+                                            // (onRailItemClick). The rail's measured width already includes
+                                            // its start inset, so that much is consumed for the player.
+                                            val playerStart = if (showRail) railWidth else 0.dp
+                                            Box(
+                                                Modifier
+                                                    .fillMaxSize()
+                                                    .padding(start = playerStart)
+                                                    .consumeWindowInsets(PaddingValues(start = playerStart)),
+                                            ) {
+                                                BottomSheetPlayer(
+                                                    state = playerBottomSheetState,
+                                                    navController = navController,
+                                                    pureBlack = pureBlack,
+                                                )
+                                            }
                                         }
                                     }
 
@@ -1370,6 +1389,11 @@ class MainActivity : FragmentActivity() {
                                     pureBlack = pureBlack,
                                     onSearchLongClick = onRailSearchLongClick,
                                     onHomeLongHold = { showAccountDialog = true },
+                                    // FletchTunes: measured so the player can start to the right of it.
+                                    modifier =
+                                        Modifier.onSizeChanged {
+                                            railWidth = with(density) { it.width.toDp() }
+                                        },
                                 )
                             }
                             Box(Modifier.weight(1f)) {
