@@ -1290,29 +1290,37 @@ class MainActivity : FragmentActivity() {
                                     )
                                 }
                             } else {
-                                if (currentRoute != "wrapped") {
-                                    if (activePlayerConnection != null) {
-                                        BottomSheetPlayer(
-                                            state = playerBottomSheetState,
-                                            navController = navController,
-                                            pureBlack = pureBlack,
-                                        )
+                                // FletchTunes: this branch must sit in its own Box, as the bottom-nav
+                                // branch above does. Without it, `.align(BottomCenter)` below resolves
+                                // to the outer BoxWithConstraints scope and is ignored by the Scaffold's
+                                // bottomBar slot; the full-height BottomSheetPlayer makes that slot the
+                                // whole screen, so the bottom-inset strip landed at y=0 and covered the
+                                // top app bar (rail layout: tablets and landscape, with a song loaded).
+                                Box {
+                                    if (currentRoute != "wrapped") {
+                                        if (activePlayerConnection != null) {
+                                            BottomSheetPlayer(
+                                                state = playerBottomSheetState,
+                                                navController = navController,
+                                                pureBlack = pureBlack,
+                                            )
+                                        }
                                     }
-                                }
 
-                                Box(
-                                    modifier =
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .align(Alignment.BottomCenter)
-                                            .height(bottomInsetDp)
-                                            // Use graphicsLayer for background color changes
-                                            .graphicsLayer {
-                                                val progress = playerBottomSheetState.progress
-                                                alpha =
-                                                    if (progress > 0f || (useNewMiniPlayerDesign && !shouldShowNavigationBar)) 0f else 1f
-                                            }.background(baseBg),
-                                )
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .align(Alignment.BottomCenter)
+                                                .height(bottomInsetDp)
+                                                // Use graphicsLayer for background color changes
+                                                .graphicsLayer {
+                                                    val progress = playerBottomSheetState.progress
+                                                    alpha =
+                                                        if (progress > 0f || (useNewMiniPlayerDesign && !shouldShowNavigationBar)) 0f else 1f
+                                                }.background(baseBg),
+                                    )
+                                }
                             }
                         },
                         modifier =
