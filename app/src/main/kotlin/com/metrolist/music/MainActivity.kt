@@ -271,6 +271,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var queueSyncRepository: com.metrolist.music.playback.queue.sync.QueueSyncRepository
 
+    @Inject
+    lateinit var queueBoard: com.metrolist.music.playback.queue.QueueBoard
+
     private lateinit var navController: NavHostController
     private var pendingIntent: Intent? = null
     private var latestVersionName by mutableStateOf(BuildConfig.BASE_VERSION_NAME)
@@ -996,6 +999,41 @@ class MainActivity : FragmentActivity() {
                     }
                 }
 
+                // FletchTunes (row 193): the Queues tab, on the rail and the bottom bar, toggles
+                // between the active queue's own page (the player's Queue sheet, which a queue-row
+                // tap also opens) and the Queues list. With a queue loaded and its page not showing,
+                // the tap navigates to the Queues list and opens the Queue sheet over it, so closing
+                // the sheet lands on the list; that keeps the list one swipe away on phones, where
+                // the bottom bar slides away under the expanded player. Returns true when it handled
+                // the tap; otherwise (no queue loaded, or the page is already showing) the caller's
+                // usual handling collapses the player and shows the list.
+                val onQueuesTabClick: () -> Boolean =
+                    remember(navController, playerBottomSheetState, playerConnection) {
+                        {
+                            val queueLoaded =
+                                queueBoard.activeQueueId.value != null &&
+                                    (playerConnection?.player?.mediaItemCount ?: 0) > 0
+                            val onActiveQueuePage =
+                                playerBottomSheetState.isExpanded &&
+                                    playerConnection?.queueSheetExpanded?.value == true
+                            if (queueLoaded && !onActiveQueuePage) {
+                                if (navController.currentDestination?.route != Screens.Queues.route) {
+                                    navController.navigate(Screens.Queues.route) {
+                                        popUpTo(navController.graph.startDestinationId) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                }
+                                playerConnection?.requestOpenQueueSheet()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    }
+
                 var shouldShowTopBar by rememberSaveable { mutableStateOf(false) }
 
                 LaunchedEffect(navBackStackEntry, listenTogetherInTopBar) {
@@ -1178,8 +1216,11 @@ class MainActivity : FragmentActivity() {
                                     topAppBarScrollBehavior,
                                     playerBottomSheetState,
                                     currentBackStackEntry,
+                                    onQueuesTabClick,
                                 ) {
-                                    { screen: Screens, isSelected: Boolean ->
+                                    navClick@{ screen: Screens, isSelected: Boolean ->
+                                        // Row 193: Queues opens the active queue's page when one is loaded.
+                                        if (screen == Screens.Queues && onQueuesTabClick()) return@navClick
                                         if (playerBottomSheetState.isExpanded) {
                                             playerBottomSheetState.collapseSoft()
                                         }
@@ -1349,8 +1390,10 @@ class MainActivity : FragmentActivity() {
                     ) {
                         Row(Modifier.fillMaxSize()) {
                             val onRailItemClick: (Screens, Boolean) -> Unit =
-                                remember(navController, coroutineScope, topAppBarScrollBehavior, playerBottomSheetState) {
-                                    { screen: Screens, isSelected: Boolean ->
+                                remember(navController, coroutineScope, topAppBarScrollBehavior, playerBottomSheetState, onQueuesTabClick) {
+                                    railClick@{ screen: Screens, isSelected: Boolean ->
+                                        // Row 193: Queues opens the active queue's page when one is loaded.
+                                        if (screen == Screens.Queues && onQueuesTabClick()) return@railClick
                                         if (playerBottomSheetState.isExpanded) {
                                             playerBottomSheetState.collapseSoft()
                                         }

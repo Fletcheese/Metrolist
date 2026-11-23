@@ -81,6 +81,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -825,6 +826,13 @@ fun BottomSheetPlayer(
     LaunchedEffect(playerConnection) {
         playerConnection.openQueueSheetEvent.collect {
             queueSheetState.expandSoft()
+        }
+    }
+
+    // Row 193: tell MainActivity's Queues tab whether the Queue page is up.
+    LaunchedEffect(playerConnection, queueSheetState) {
+        snapshotFlow { queueSheetState.isExpanded }.collect {
+            playerConnection.queueSheetExpanded.value = it
         }
     }
 

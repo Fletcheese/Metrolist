@@ -252,6 +252,10 @@ class PlayerConnection(
         _openQueueSheetEvent.tryEmit(Unit)
     }
 
+    // Whether the player's own Queue sheet is fully up, mirrored by Player.kt. MainActivity's
+    // Queues tab reads it to tell whether the active queue's page is already showing (row 193).
+    val queueSheetExpanded = MutableStateFlow(false)
+
     fun playQueue(
         queue: Queue,
         resumeBoardQueueId: String? = null,
