@@ -79,12 +79,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
+/**
+ * FletchTunes: whether song menus (this one and [SongMenu]) offer "Refetch". Hidden (row 194);
+ * the item and what it does are kept, so this one flag brings it back.
+ */
+internal const val ShowRefetchInSongMenus = false
+
 @Composable
 fun QueueMenu(
     mediaMetadata: MediaMetadata?,
     playerBottomSheetState: BottomSheetState,
     onShowDetailsDialog: () -> Unit,
     onDismiss: () -> Unit,
+    // FletchTunes: [inQueue] is set when the song is opened from its queue's page (the Queue sheet).
+    // The menu then leaves out "Add to queue", the song being in it already, and offers "Remove
+    // from queue" when [onRemoveFromQueue] is given (it is not while the queue's edit lock is on).
+    inQueue: Boolean = false,
+    onRemoveFromQueue: (() -> Unit)? = null,
 ) {
     mediaMetadata ?: return
     val navController = LocalNavController.current
@@ -335,7 +346,7 @@ fun QueueMenu(
         // Play next / Add to queue
         item {
             Material3MenuGroup(
-                items = listOf(
+                items = listOfNotNull(
                     Material3MenuItemData(
                         title = { Text(text = stringResource(R.string.play_next)) },
                         description = { Text(text = stringResource(R.string.play_next_desc)) },
@@ -354,24 +365,42 @@ fun QueueMenu(
                             }
                         }
                     ),
-                    Material3MenuItemData(
-                        title = { Text(text = stringResource(R.string.add_to_queue)) },
-                        description = { Text(text = stringResource(R.string.add_to_queue_desc)) },
-                        icon = {
-                            Icon(
-                                painter = painterResource(R.drawable.queue_music),
-                                contentDescription = null,
-                            )
-                        },
-                        onClick = {
-                            onDismiss()
-                            librarySong?.let {
-                                playerConnection.addToQueue(it.toMediaItem())
-                            } ?: run {
-                                playerConnection.addToQueue(mediaMetadata.toMediaItem())
+                    if (onRemoveFromQueue != null) {
+                        Material3MenuItemData(
+                            title = { Text(text = stringResource(R.string.remove_from_queue)) },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.remove),
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                onDismiss()
+                                onRemoveFromQueue()
                             }
-                        }
-                    )
+                        )
+                    } else if (!inQueue) {
+                        Material3MenuItemData(
+                            title = { Text(text = stringResource(R.string.add_to_queue)) },
+                            description = { Text(text = stringResource(R.string.add_to_queue_desc)) },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.queue_music),
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                onDismiss()
+                                librarySong?.let {
+                                    playerConnection.addToQueue(it.toMediaItem())
+                                } ?: run {
+                                    playerConnection.addToQueue(mediaMetadata.toMediaItem())
+                                }
+                            }
+                        )
+                    } else {
+                        null
+                    },
                 )
             )
         }
@@ -519,7 +548,8 @@ fun QueueMenu(
         item {
             Material3MenuGroup(
                 items = buildList {
-                    add(
+                    // FletchTunes: Refetch is hidden from song menus (row 194).
+                    if (ShowRefetchInSongMenus) add(
                         Material3MenuItemData(
                             title = { Text(text = stringResource(R.string.refetch)) },
                             description = { Text(text = stringResource(R.string.refetch_desc)) },

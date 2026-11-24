@@ -1043,4 +1043,6 @@
     <string name="offline_song_count">%1$d of %2$d songs downloaded</string>
     <string name="offline_search">You\'re offline, so search covers only music saved on this phone.</string>
     <string name="offline_queue_hint">Offline: greyed-out songs aren\'t downloaded and will be skipped.</string>
+    <!-- FletchTunes: removing a song from a queue on its Queue page -->
+    <string name="removed_song_from_queue">Removed \"%s\" from the queue</string>
 </resources>

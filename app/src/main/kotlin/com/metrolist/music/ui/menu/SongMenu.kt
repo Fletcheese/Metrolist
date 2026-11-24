@@ -1094,7 +1094,8 @@ fun SongMenu(
                                 ),
                             )
                         }
-                        add(
+                        // FletchTunes: Refetch is hidden from song menus (row 194).
+                        if (ShowRefetchInSongMenus) add(
                             Material3MenuItemData(
                                 title = { Text(text = stringResource(R.string.refetch)) },
                                 description = { Text(text = stringResource(R.string.refetch_desc)) },

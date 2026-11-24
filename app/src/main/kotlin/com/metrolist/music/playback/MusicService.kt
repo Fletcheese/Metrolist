@@ -4833,18 +4833,27 @@ class MusicService :
         // For a shuffled queue, also each song's place in the real order, so resuming it later
         // keeps both the real order and this exact shuffle order (FletchTunes).
         val shuffled = player.shuffleModeEnabled
-        val realPositions =
-            if (shuffled) {
-                val rank = order.sorted().withIndex().associate { (rank, mediaIndex) -> mediaIndex to rank }
-                order.map { rank.getValue(it) }
-            } else {
-                null
-            }
-        applicationScope.launch(Dispatchers.IO) {
+        val realPositions = if (shuffled) com.metrolist.music.playback.queue.realPositionsOf(order) else null
+        enqueueBoardWrite {
             runCatching {
                 queueBoard.recordQueueEdit(id, items, index, positionMs, shuffled, realPositions)
             }.onFailure { Timber.tag(TAG).e(it, "Failed to sync queue edit to QueueBoard") }
         }
+    }
+
+    /**
+     * Board writes from the player, run one at a time in the order the player changed (FletchTunes).
+     * Two quick edits (an Undo re-inserting a song and then restoring its shuffle order, say) each
+     * save the whole queue, so the older snapshot must never land after the newer one.
+     */
+    private val boardWrites = kotlinx.coroutines.channels.Channel<suspend () -> Unit>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+    private var boardWriter: Job? = null
+
+    private fun enqueueBoardWrite(write: suspend () -> Unit) {
+        if (boardWriter?.isActive != true) {
+            boardWriter = applicationScope.launch(Dispatchers.IO) { for (next in boardWrites) next() }
+        }
+        boardWrites.trySend(write)
     }
 
     /**
@@ -4891,7 +4900,7 @@ class MusicService :
         if (index < 0) return
         val songId = player.currentMediaItem?.mediaId
         val positionMs = player.currentPosition.coerceAtLeast(0L)
-        applicationScope.launch(Dispatchers.IO) {
+        enqueueBoardWrite {
             runCatching { queueBoard.recordPlaybackState(id, index, songId, positionMs) }
                 .onFailure { Timber.tag(TAG).e(it, "Failed to record queue playback state") }
         }

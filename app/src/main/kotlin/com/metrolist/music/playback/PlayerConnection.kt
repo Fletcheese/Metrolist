@@ -16,6 +16,7 @@ import androidx.media3.common.Player.REPEAT_MODE_OFF
 import androidx.media3.common.Player.STATE_ENDED
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import com.metrolist.music.constants.SleepTimerCustomDaysKey
 import com.metrolist.music.constants.SleepTimerDayTimesKey
 import com.metrolist.music.constants.SleepTimerDefaultKey
@@ -33,6 +34,9 @@ import com.metrolist.music.extensions.togglePlayPause
 import com.metrolist.music.extensions.withUpdatedMetadata
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.MusicService.MusicBinder
+import com.metrolist.music.playback.queue.RemovedQueueSong
+import com.metrolist.music.playback.queue.playOrderToRestore
+import com.metrolist.music.playback.queue.removeQueueSong
 import com.metrolist.music.playback.queues.Queue
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.get
@@ -343,6 +347,33 @@ class PlayerConnection(
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Error in addToQueue")
             throw e
+        }
+    }
+
+    /**
+     * FletchTunes: takes the song at media index [index] out of the queue in the player, from its
+     * Queue page (a left swipe or "Remove from queue"). If it is the song playing now, ExoPlayer
+     * itself moves on to the next one in play order (shuffle order when shuffled). The player's
+     * timeline change saves the queue to QueueBoard as a normal content edit, shuffle order
+     * included, which the queue sync then sends. Returns what [undoRemoveFromQueue] needs, or null
+     * if nothing was removed ([expectedMediaId] no longer at [index], or a Listen Together guest).
+     * See [removeQueueSong] for why this is a single player call.
+     */
+    fun removeFromQueue(index: Int, expectedMediaId: String? = null): RemovedQueueSong? {
+        if (shouldBlockPlaybackChanges?.invoke() == true) return null
+        val player = getPlayerOrNull() ?: return null
+        return removeQueueSong(player, index, expectedMediaId)
+    }
+
+    /** Puts a song taken out by [removeFromQueue] back where it was, in the same shuffle order. */
+    fun undoRemoveFromQueue(removed: RemovedQueueSong) {
+        if (shouldBlockPlaybackChanges?.invoke() == true) return
+        val player = getPlayerOrNull() ?: return
+        player.addMediaItem(removed.mediaIndex.coerceIn(0, player.mediaItemCount), removed.mediaItem)
+        if (removed.shuffled && player.shuffleModeEnabled) {
+            playOrderToRestore(removed.playOrder, player.mediaItemCount)?.let {
+                player.setShuffleOrder(DefaultShuffleOrder(it, System.currentTimeMillis()))
+            }
         }
     }
 

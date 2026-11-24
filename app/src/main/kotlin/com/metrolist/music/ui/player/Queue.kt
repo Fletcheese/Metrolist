@@ -132,6 +132,8 @@ import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.utils.safeDataStoreEdit
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import sh.calvin.reorderable.ReorderableItem
@@ -233,6 +235,27 @@ fun Queue(
     var dismissJob: Job? by remember { mutableStateOf(null) }
 
     val coroutineScope = rememberCoroutineScope()
+
+    // FletchTunes: the one removal behind a song row's left swipe and its menu's "Remove from
+    // queue". The player's change saves the queue as a normal edit, so it syncs; Undo puts the
+    // song back in the same place and, when shuffled, the same shuffle order.
+    val removeFromQueueWithUndo: (index: Int, mediaId: String, title: String?) -> Boolean = { index, mediaId, title ->
+        val removed = playerConnection.removeFromQueue(index, mediaId)
+        removed?.let { removed ->
+            dismissJob?.cancel()
+            dismissJob =
+                coroutineScope.launch {
+                    val result =
+                        snackbarHostState.showSnackbar(
+                            message = context.getString(R.string.removed_song_from_queue, title.orEmpty()),
+                            actionLabel = context.getString(R.string.undo),
+                            duration = SnackbarDuration.Short,
+                        )
+                    if (result == SnackbarResult.ActionPerformed) playerConnection.undoRemoveFromQueue(removed)
+                }
+        }
+        removed != null
+    }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
     val sleepTimerDefault by rememberPreference(SleepTimerDefaultKey, 30f)
     var sleepTimerValue by remember { mutableFloatStateOf(sleepTimerDefault) }
@@ -662,7 +685,19 @@ fun Queue(
             }
         },
     ) {
-        val queueTitle by playerConnection.queueTitle.collectAsStateWithLifecycle()
+        val playerQueueTitle by playerConnection.queueTitle.collectAsStateWithLifecycle()
+        // FletchTunes: a saved queue's title comes from the board, so a rename (here or synced
+        // from another device) shows at once; the player's own title only changes on a new queue.
+        val queueBoard = playerConnection.service.queueBoard
+        val activeBoardQueueId by queueBoard.activeQueueId.collectAsStateWithLifecycle()
+        val boardQueueTitle by
+            remember(activeBoardQueueId) {
+                activeBoardQueueId
+                    ?.takeIf { queueBoard.isLoadedInPlayer(it) }
+                    ?.let { id -> queueBoard.queueFlow(id).map { it?.title } }
+                    ?: flowOf(null)
+            }.collectAsStateWithLifecycle(initialValue = null)
+        val queueTitle = boardQueueTitle ?: playerQueueTitle
         val queueWindows by playerConnection.queueWindows.collectAsStateWithLifecycle()
         val automix by playerConnection.service.automixItems.collectAsStateWithLifecycle()
         val pendingAutoplayIndex by playerConnection.service.pendingAutoplayIndex.collectAsStateWithLifecycle()
@@ -671,9 +706,15 @@ fun Queue(
                 queueWindows.firstOrNull { it.firstPeriodIndex == pendingAutoplayIndex }
             }
         val mutableQueueWindows = remember { mutableStateListOf<Timeline.Window>() }
+        // FletchTunes: the header counts the queue's own songs, not the waiting Autoplay suggestion,
+        // which the player holds at the end of its playlist but the page lists under "Autoplay".
+        val queueSongWindows =
+            remember(queueWindows, pendingAutoplayWindow) {
+                queueWindows.filter { it !== pendingAutoplayWindow }
+            }
         val queueLength =
-            remember(queueWindows) {
-                queueWindows.sumOf { it.mediaItem.metadata!!.duration }
+            remember(queueSongWindows) {
+                queueSongWindows.sumOf { it.mediaItem.metadata!!.duration }
             }
 
         val coroutineScope = rememberCoroutineScope()
@@ -801,41 +842,27 @@ fun Queue(
                     ) {
                         val currentItem by rememberUpdatedState(window)
                         val isActive = window.uid == currentPlayingUid
+                        // FletchTunes: swiping a row left removes it, past half the row's width
+                        // or with a fling. The queue's edit lock blocks it, as upstream's does,
+                        // along with the menu's "Remove from queue" and drag-to-reorder.
                         val dismissBoxState =
                             rememberSwipeToDismissBoxState(
-                                positionalThreshold = { totalDistance -> totalDistance },
+                                positionalThreshold = { totalDistance -> totalDistance * 0.5f },
                             )
 
                         var processedDismiss by remember { mutableStateOf(false) }
-                        val removedSongMsg =
-                            stringResource(R.string.removed_song_from_playlist, currentItem.mediaItem.metadata?.title ?: "")
-                        val undoStr = stringResource(R.string.undo)
                         LaunchedEffect(dismissBoxState.currentValue) {
                             val dv = dismissBoxState.currentValue
-                            if (!processedDismiss && !isListenTogetherGuest && (
-                                    dv == SwipeToDismissBoxValue.StartToEnd ||
-                                        dv == SwipeToDismissBoxValue.EndToStart
-                                )
-                            ) {
+                            if (!processedDismiss && !locked && !isListenTogetherGuest && dv == SwipeToDismissBoxValue.EndToStart) {
                                 processedDismiss = true
-                                playerConnection.player.removeMediaItem(currentItem.firstPeriodIndex)
-                                dismissJob?.cancel()
-                                dismissJob =
-                                    coroutineScope.launch {
-                                        val snackbarResult =
-                                            snackbarHostState.showSnackbar(
-                                                message = removedSongMsg,
-                                                actionLabel = undoStr,
-                                                duration = SnackbarDuration.Short,
-                                            )
-                                        if (snackbarResult == SnackbarResult.ActionPerformed) {
-                                            playerConnection.player.addMediaItem(currentItem.mediaItem)
-                                            playerConnection.player.moveMediaItem(
-                                                mutableQueueWindows.size,
-                                                currentItem.firstPeriodIndex,
-                                            )
-                                        }
-                                    }
+                                val removed =
+                                    removeFromQueueWithUndo(
+                                        currentItem.firstPeriodIndex,
+                                        currentItem.mediaItem.mediaId,
+                                        currentItem.mediaItem.metadata?.title,
+                                    )
+                                // Nothing was removed (the queue moved under the row): put it back.
+                                if (!removed) dismissBoxState.reset()
                             }
                             if (dv == SwipeToDismissBoxValue.Settled) {
                                 processedDismiss = false
@@ -886,6 +913,20 @@ fun Queue(
                                                                     }
                                                                 },
                                                                 onDismiss = menuState::dismiss,
+                                                                inQueue = true,
+                                                                // The edit lock blocks removal, as upstream's lock blocks the swipe.
+                                                                onRemoveFromQueue =
+                                                                    if (locked) {
+                                                                        null
+                                                                    } else {
+                                                                        {
+                                                                            removeFromQueueWithUndo(
+                                                                                currentItem.firstPeriodIndex,
+                                                                                currentItem.mediaItem.mediaId,
+                                                                                currentItem.mediaItem.metadata?.title,
+                                                                            )
+                                                                        }
+                                                                    },
                                                             )
                                                         }
                                                     },
@@ -956,15 +997,13 @@ fun Queue(
                             }
                         }
 
-                        if (locked) {
+                        SwipeToDismissBox(
+                            state = dismissBoxState,
+                            backgroundContent = {},
+                            enableDismissFromStartToEnd = false,
+                            gesturesEnabled = !locked && !isListenTogetherGuest && !inSelectMode,
+                        ) {
                             content()
-                        } else {
-                            SwipeToDismissBox(
-                                state = dismissBoxState,
-                                backgroundContent = {},
-                            ) {
-                                content()
-                            }
                         }
                     }
                 }
@@ -1126,8 +1165,8 @@ fun Queue(
                         text =
                             pluralStringResource(
                                 R.plurals.n_song,
-                                queueWindows.size,
-                                queueWindows.size,
+                                queueSongWindows.size,
+                                queueSongWindows.size,
                             ),
                         style = MaterialTheme.typography.bodyMedium,
                     )
