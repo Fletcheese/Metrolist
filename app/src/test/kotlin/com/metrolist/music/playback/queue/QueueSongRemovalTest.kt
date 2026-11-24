@@ -171,6 +171,22 @@ class QueueSongRemovalTest {
     }
 
     @Test
+    fun removingThePlayingLastSongTellsTheServiceBeforeTheRemoval() {
+        // 11-24 11:14:55: the end that followed made MusicService's Autoplay play the 2nd song.
+        val rec = RecordingPlayer(listOf("A", "B", "C"), current = 2, playWhenReady = true)
+        var callsAtSignal = -1
+        removeQueueSong(rec.player, 2, "C", onLastSongRemoved = { callsAtSignal = rec.writes().size })
+        assertEquals(0, callsAtSignal)
+        assertEquals(listOf("removeMediaItem(2)"), rec.writes())
+        // Not for another song, not while paused, not when a next song follows.
+        var signalled = false
+        removeQueueSong(RecordingPlayer(listOf("A", "B", "C"), current = 0).player, 2, "C", onLastSongRemoved = { signalled = true })
+        removeQueueSong(RecordingPlayer(listOf("A", "B", "C"), current = 2, playWhenReady = false).player, 2, "C", onLastSongRemoved = { signalled = true })
+        removeQueueSong(RecordingPlayer(listOf("A", "B", "C"), current = 1).player, 1, "B", onLastSongRemoved = { signalled = true })
+        assertFalse(signalled)
+    }
+
+    @Test
     fun removedPositionsFindsSongsTakenOutAndNothingElse() {
         assertEquals(listOf(1, 3), removedPositions(listOf("A", "B", "C", "D"), listOf("A", "C")))
         // A song in the queue twice: either copy may go, the result is the same list.

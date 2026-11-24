@@ -3248,6 +3248,13 @@ class MusicService :
         }
     }
 
+    /**
+     * Row 195: the song playing was the last one in play order and was just taken out of the
+     * queue, so the end that follows is the queue running out: Autoplay must not jump back into
+     * it. Set from PlayerConnection.removeFromQueue; cleared at that end or when a song is ready.
+     */
+    @Volatile var lastSongRemoved = false
+
     override fun onPlaybackStateChanged(
         @Player.State playbackState: Int,
     ) {
@@ -3286,7 +3293,11 @@ class MusicService :
                 return
             }
 
-            if (player.playWhenReady && cachedAutoplay && player.hasNextMediaItem()) {
+            // Row 195: taking the playing last song out of the queue ends playback at the first
+            // song; that is the queue running out, not a song finishing, so nothing plays.
+            val endedByRemoval = lastSongRemoved
+            lastSongRemoved = false
+            if (player.playWhenReady && cachedAutoplay && player.hasNextMediaItem() && !endedByRemoval) {
                 player.seekToNextMediaItem()
                 player.prepare()
                 if (castConnectionHandler?.isCasting?.value != true) {
@@ -3301,6 +3312,7 @@ class MusicService :
         }
 
         if (playbackState == Player.STATE_READY) {
+            lastSongRemoved = false
             consecutivePlaybackErr = 0
             retryCount = 0
             waitingForNetworkConnection.value = false

@@ -35,20 +35,27 @@ data class RemovedQueueSong(
  * Removing the current song is a skip, as the Next button is (row 195, 2026-11-24): if there is a
  * next song and the player was paused, [postToPlayer] is handed a `play()` to run in a later
  * main-thread turn, so it never reaches the analytics listeners in the same batch as the removal.
- * While playing, ExoPlayer already carries on with the next song. The last song stops as before.
+ * While playing, ExoPlayer already carries on with the next song.
+ *
+ * Taking out the playing song when it is the last in play order ends the queue: ExoPlayer stops
+ * at the first song, and [onLastSongRemoved] runs first so MusicService's end-of-song Autoplay
+ * does not jump back into the queue (it played the second song on 11-24 at 11:14:55).
  */
 fun removeQueueSong(
     player: Player,
     index: Int,
     expectedMediaId: String? = null,
+    onLastSongRemoved: (() -> Unit)? = null,
     postToPlayer: ((Runnable) -> Unit)? = null,
 ): RemovedQueueSong? {
     if (index !in 0 until player.mediaItemCount) return null
     val mediaItem = player.getMediaItemAt(index)
     if (expectedMediaId != null && mediaItem.mediaId != expectedMediaId) return null
     val removed = RemovedQueueSong(index, mediaItem, player.shuffleModeEnabled, playOrderOf(player))
-    val skipsToNext = index == player.currentMediaItemIndex && player.hasNextMediaItem()
+    val isCurrent = index == player.currentMediaItemIndex
+    val skipsToNext = isCurrent && player.hasNextMediaItem()
     val resume = skipsToNext && !player.playWhenReady
+    if (isCurrent && !skipsToNext && player.playWhenReady) onLastSongRemoved?.invoke()
     player.removeMediaItem(index)
     if (resume && postToPlayer != null) postToPlayer(Runnable { playAfterRemoval(player) })
     return removed
