@@ -446,7 +446,33 @@ class QueueBoard @Inject constructor(
      * returns false if the queue was edited here since the sync decided, which the next sync sees
      * as a conflict. A queue loaded in the player is reloaded from the database afterwards.
      */
-    suspend fun applyRemote(remote: RemoteQueue, force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * Queue sync (row 195): if [remote]'s content can be applied to queue [id] while it plays here
+     * without stopping the song (see [com.metrolist.music.playback.queue.liveRemovalIndex]), the
+     * playing song's play-order index once it is applied; else null.
+     */
+    suspend fun liveApplyIndex(id: String, remote: QueueContent): Int? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val queue = queueDao.getQueueOnce(id) ?: return@withLock null
+            val songIds = queueDao.getSongMapsOnce(id).map { it.songId }
+            com.metrolist.music.playback.queue.liveRemovalIndex(
+                localSongs = songIds,
+                localShuffled = queue.shuffled,
+                localOrder = if (queue.shuffled) readShuffleOrder(id) else null,
+                currentIndex = queue.currentIndex,
+                remoteSongs = remote.songs.map { it.id },
+                remoteShuffled = remote.shuffled,
+                remoteOrder = remote.shuffleOrder,
+            )
+        }
+    }
+
+    /**
+     * [livePlayingIndex]: the queue is playing here and the change is being applied live (row 195),
+     * so this device's playback stands: the playing song keeps its place at that index, and the
+     * server's playback state is not taken.
+     */
+    suspend fun applyRemote(remote: RemoteQueue, force: Boolean = false, livePlayingIndex: Int? = null): Boolean = withContext(Dispatchers.IO) {
         val applied = mutex.withLock {
             val id = remote.id
             val state = queueDao.getSyncState(id)
@@ -470,9 +496,15 @@ class QueueBoard @Inject constructor(
             val existing = queueDao.getQueueOnce(id)
             val songs = content.songs.map { it.toMediaMetadata() }
             ensureSongsExist(songs)
-            val takePlayback = remote.playback != null &&
+            val takePlayback = livePlayingIndex == null && remote.playback != null &&
                 remote.playbackAt > maxOf(state?.playbackAt ?: 0L, state?.playbackSyncedAt ?: 0L)
-            val playback = if (takePlayback) remote.playback else null
+            val playback = if (takePlayback) {
+                remote.playback
+            } else if (livePlayingIndex != null && existing != null) {
+                PlaybackState(livePlayingIndex, existing.currentSongId, existing.positionMs, existing.lastPlayedAt)
+            } else {
+                null
+            }
             val lastPlayedAt = maxOf(existing?.lastPlayedAt ?: 0L, playback?.lastPlayedAt ?: 0L, if (existing == null) remote.editedAt else 0L)
             queueDao.upsertQueue(
                 QueueEntity(

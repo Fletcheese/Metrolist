@@ -31,14 +31,76 @@ data class RemovedQueueSong(
  * and the removal reach the analytics listeners as one batch carrying two different event times,
  * and media3's PlaybackStatsListener (YouTubeHistoryReporter's) throws IllegalArgumentException
  * from `PlaybackStatsTracker.updatePlaybackState`. Upstream Metrolist's swipe also only removed.
+ *
+ * Removing the current song is a skip, as the Next button is (row 195, 2026-11-24): if there is a
+ * next song and the player was paused, [postToPlayer] is handed a `play()` to run in a later
+ * main-thread turn, so it never reaches the analytics listeners in the same batch as the removal.
+ * While playing, ExoPlayer already carries on with the next song. The last song stops as before.
  */
-fun removeQueueSong(player: Player, index: Int, expectedMediaId: String? = null): RemovedQueueSong? {
+fun removeQueueSong(
+    player: Player,
+    index: Int,
+    expectedMediaId: String? = null,
+    postToPlayer: ((Runnable) -> Unit)? = null,
+): RemovedQueueSong? {
     if (index !in 0 until player.mediaItemCount) return null
     val mediaItem = player.getMediaItemAt(index)
     if (expectedMediaId != null && mediaItem.mediaId != expectedMediaId) return null
     val removed = RemovedQueueSong(index, mediaItem, player.shuffleModeEnabled, playOrderOf(player))
+    val skipsToNext = index == player.currentMediaItemIndex && player.hasNextMediaItem()
+    val resume = skipsToNext && !player.playWhenReady
     player.removeMediaItem(index)
+    if (resume && postToPlayer != null) postToPlayer(Runnable { playAfterRemoval(player) })
     return removed
+}
+
+/** Starts the song that took a removed current song's place (see [removeQueueSong]). */
+fun playAfterRemoval(player: Player) {
+    if (player.mediaItemCount == 0 || player.playbackState == Player.STATE_ENDED) return
+    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+    player.play()
+}
+
+/**
+ * The positions in [local] that are missing from [remote], if [remote] is [local] with only some
+ * songs taken out (the rest in the same order); null if anything else changed or nothing was
+ * removed. Both lists are song ids in play order; a song in a queue twice is handled.
+ */
+fun removedPositions(local: List<String>, remote: List<String>): List<Int>? {
+    if (remote.size >= local.size) return null
+    val removed = ArrayList<Int>(local.size - remote.size)
+    var r = 0
+    for ((i, id) in local.withIndex()) {
+        if (r < remote.size && remote[r] == id) r++ else removed += i
+    }
+    return removed.takeIf { r == remote.size }
+}
+
+/**
+ * Queue sync (row 195): whether a synced change to the queue playing here can be applied without
+ * stopping the song, and if so the new play-order index of that song. It can when the other device
+ * only took songs out (or changed nothing in the song list, a rename say), the song playing here is
+ * not one of them, and the shuffle flag and order agree. [localOrder] and [remoteOrder] are each
+ * queue's real-order positions (QueueBoard's shuffle order), used only when shuffled.
+ */
+fun liveRemovalIndex(
+    localSongs: List<String>,
+    localShuffled: Boolean,
+    localOrder: List<Int>?,
+    currentIndex: Int,
+    remoteSongs: List<String>,
+    remoteShuffled: Boolean,
+    remoteOrder: List<Int>?,
+): Int? {
+    if (localShuffled != remoteShuffled || currentIndex !in localSongs.indices) return null
+    val removed = if (remoteSongs == localSongs) emptyList() else removedPositions(localSongs, remoteSongs) ?: return null
+    if (currentIndex in removed) return null
+    if (localShuffled) {
+        if (localOrder == null || remoteOrder == null || localOrder.size != localSongs.size) return null
+        val keptOrder = localOrder.filterIndexed { i, _ -> i !in removed }
+        if (realPositionsOf(keptOrder) != remoteOrder) return null
+    }
+    return currentIndex - removed.count { it < currentIndex }
 }
 
 /** [player]'s songs as media indices in the order they play (the shuffle order when shuffled). */

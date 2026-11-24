@@ -4873,6 +4873,12 @@ class MusicService :
             queueBoard.reloadDone(id)
             return
         }
+        // Playing (row 195): songs taken out on another device come out of the player in place,
+        // so the song playing here carries on. Anything else, or paused, reloads the queue.
+        if (player.playWhenReady && removeSyncedSongsInPlace(songs.map { it.id })) {
+            queueBoard.reloadDone(id)
+            return
+        }
         // Detach first, so playQueue() does not save the player's old copy over the synced one.
         activeQueueBoardId = null
         queueBoard.reloadDone(id)
@@ -4887,6 +4893,30 @@ class MusicService :
             playWhenReady = player.playWhenReady,
             resumeBoardQueueId = id,
         )
+    }
+
+    /**
+     * Makes the player's queue (in play order) match [target] by taking out the songs it lacks,
+     * leaving the current song playing. Each removal runs in its own main-thread turn, so no two
+     * playlist changes reach the analytics listeners as one batch (the row 194 crash). False if
+     * [target] is not the player's queue with some songs taken out, the current song among them,
+     * or the result does not match; the caller then reloads the queue instead.
+     */
+    private suspend fun removeSyncedSongsInPlace(target: List<String>): Boolean {
+        val order = playOrderIndices()
+        val ids = order.map { player.getMediaItemAt(it).mediaId }
+        if (ids == target) return true
+        val removed = com.metrolist.music.playback.queue.removedPositions(ids, target) ?: return false
+        val currentPosition = order.indexOf(player.currentMediaItemIndex)
+        if (currentPosition < 0 || currentPosition in removed) return false
+        for (mediaIndex in removed.map { order[it] }.sortedDescending()) {
+            if (mediaIndex >= player.mediaItemCount) return false
+            player.removeMediaItem(mediaIndex)
+            kotlinx.coroutines.yield()
+        }
+        val now = playOrderIndices().map { player.getMediaItemAt(it).mediaId }
+        Timber.tag(TAG).d("Queue sync: took ${removed.size} song(s) out of the playing queue in place")
+        return now == target
     }
 
     /**

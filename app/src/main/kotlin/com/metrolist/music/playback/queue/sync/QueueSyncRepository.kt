@@ -264,7 +264,13 @@ class QueueSyncRepository @Inject constructor(
             }
             ContentDecision.PushDelete -> return pushDelete(api, id, state ?: QueueSyncEntity(queueId = id, deleted = true), force = false)
             is ContentDecision.ApplyRemote -> {
-                if (queueBoard.isLoadedInPlayer(id) && queueBoard.playerPlaying) return Outcome.Deferred
+                if (queueBoard.isLoadedInPlayer(id) && queueBoard.playerPlaying) {
+                    // Playing here (row 195): songs taken out elsewhere come out live, and the
+                    // song playing carries on; any other change waits until playback pauses.
+                    val content = decision.remote.content ?: return Outcome.Deferred
+                    val index = queueBoard.liveApplyIndex(id, content) ?: return Outcome.Deferred
+                    return if (queueBoard.applyRemote(decision.remote, livePlayingIndex = index)) Outcome.Done else Outcome.Deferred
+                }
                 return if (queueBoard.applyRemote(decision.remote)) Outcome.Done else Outcome.Deferred
             }
             is ContentDecision.Adopt -> adopt(id, decision.remote, localHash)

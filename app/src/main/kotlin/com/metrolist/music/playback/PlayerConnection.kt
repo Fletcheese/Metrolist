@@ -362,7 +362,8 @@ class PlayerConnection(
     fun removeFromQueue(index: Int, expectedMediaId: String? = null): RemovedQueueSong? {
         if (shouldBlockPlaybackChanges?.invoke() == true) return null
         val player = getPlayerOrNull() ?: return null
-        return removeQueueSong(player, index, expectedMediaId)
+        val handler = android.os.Handler(player.applicationLooper)
+        return removeQueueSong(player, index, expectedMediaId) { handler.post(it) }
     }
 
     /** Puts a song taken out by [removeFromQueue] back where it was, in the same shuffle order. */
