@@ -14,8 +14,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -109,7 +107,6 @@ import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
 import com.metrolist.music.constants.ListItemHeight
 import com.metrolist.music.constants.PlayerBackgroundStyle
-import com.metrolist.music.constants.QueueEditLockKey
 import com.metrolist.music.constants.UseNewPlayerDesignKey
 import com.metrolist.music.extensions.metadata
 import com.metrolist.music.extensions.move
@@ -222,8 +219,6 @@ fun Queue(
     if (inSelectMode) {
         BackHandler(onBack = onExitSelectionMode)
     }
-
-    var locked by rememberPreference(QueueEditLockKey, defaultValue = true)
 
     val (useNewPlayerDesign, onUseNewPlayerDesignChange) =
         rememberPreference(
@@ -843,8 +838,8 @@ fun Queue(
                         val currentItem by rememberUpdatedState(window)
                         val isActive = window.uid == currentPlayingUid
                         // FletchTunes: swiping a row left removes it, past half the row's width
-                        // or with a fling. The queue's edit lock blocks it, as upstream's does,
-                        // along with the menu's "Remove from queue" and drag-to-reorder.
+                        // or with a fling. There is no edit lock: the queue is always editable, and
+                        // the 5 s Undo snackbar is the safety net for an accidental swipe.
                         val dismissBoxState =
                             rememberSwipeToDismissBoxState(
                                 positionalThreshold = { totalDistance -> totalDistance * 0.5f },
@@ -853,7 +848,7 @@ fun Queue(
                         var processedDismiss by remember { mutableStateOf(false) }
                         LaunchedEffect(dismissBoxState.currentValue) {
                             val dv = dismissBoxState.currentValue
-                            if (!processedDismiss && !locked && !isListenTogetherGuest && dv == SwipeToDismissBoxValue.EndToStart) {
+                            if (!processedDismiss && !isListenTogetherGuest && dv == SwipeToDismissBoxValue.EndToStart) {
                                 processedDismiss = true
                                 val removed =
                                     removeFromQueueWithUndo(
@@ -914,19 +909,13 @@ fun Queue(
                                                                 },
                                                                 onDismiss = menuState::dismiss,
                                                                 inQueue = true,
-                                                                // The edit lock blocks removal, as upstream's lock blocks the swipe.
-                                                                onRemoveFromQueue =
-                                                                    if (locked) {
-                                                                        null
-                                                                    } else {
-                                                                        {
-                                                                            removeFromQueueWithUndo(
-                                                                                currentItem.firstPeriodIndex,
-                                                                                currentItem.mediaItem.mediaId,
-                                                                                currentItem.mediaItem.metadata?.title,
-                                                                            )
-                                                                        }
-                                                                    },
+                                                                onRemoveFromQueue = {
+                                                                    removeFromQueueWithUndo(
+                                                                        currentItem.firstPeriodIndex,
+                                                                        currentItem.mediaItem.mediaId,
+                                                                        currentItem.mediaItem.metadata?.title,
+                                                                    )
+                                                                },
                                                             )
                                                         }
                                                     },
@@ -937,7 +926,7 @@ fun Queue(
                                                     )
                                                 }
                                             }
-                                            if (!locked && !isListenTogetherGuest) {
+                                            if (!isListenTogetherGuest) {
                                                 IconButton(
                                                     onClick = { },
                                                     modifier = Modifier.draggableHandle(),
@@ -1001,7 +990,7 @@ fun Queue(
                             state = dismissBoxState,
                             backgroundContent = {},
                             enableDismissFromStartToEnd = false,
-                            gesturesEnabled = !locked && !isListenTogetherGuest && !inSelectMode,
+                            gesturesEnabled = !isListenTogetherGuest && !inSelectMode,
                         ) {
                             content()
                         }
@@ -1139,23 +1128,7 @@ fun Queue(
                     modifier = Modifier.weight(1f),
                 )
 
-                AnimatedVisibility(
-                    visible = !inSelectMode,
-                    enter = fadeIn() + slideInVertically { it },
-                    exit = fadeOut() + slideOutVertically { it },
-                ) {
-                    Row {
-                        IconButton(
-                            onClick = { locked = !locked },
-                            modifier = Modifier.padding(horizontal = 6.dp),
-                        ) {
-                            Icon(
-                                painter = painterResource(if (locked) R.drawable.lock else R.drawable.lock_open),
-                                contentDescription = null,
-                            )
-                        }
-                    }
-                }
+                // FletchTunes: no edit-lock padlock here; the queue is always editable.
 
                 Column(
                     verticalArrangement = Arrangement.spacedBy(4.dp),

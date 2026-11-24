@@ -93,7 +93,7 @@ fun QueueMenu(
     onDismiss: () -> Unit,
     // FletchTunes: [inQueue] is set when the song is opened from its queue's page (the Queue sheet).
     // The menu then leaves out "Add to queue", the song being in it already, and offers "Remove
-    // from queue" when [onRemoveFromQueue] is given (it is not while the queue's edit lock is on).
+    // from queue" when [onRemoveFromQueue] is given (the Queue sheet always gives it; there is no edit lock).
     inQueue: Boolean = false,
     onRemoveFromQueue: (() -> Unit)? = null,
 ) {
