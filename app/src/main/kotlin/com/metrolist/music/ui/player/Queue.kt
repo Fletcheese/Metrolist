@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -778,6 +779,33 @@ fun Queue(
             }
         }
 
+        // FletchTunes (row 198): the jump arrow in the bottom bar. Lazy indices of the queue's
+        // first and last songs: the list starts with a spacer and, offline, a banner, and the
+        // waiting Autoplay suggestion (an empty row in the queue's items) is not one of the songs.
+        val queueJump by remember(isOnline, pendingAutoplayIndex) {
+            derivedStateOf {
+                val firstSongItem = if (isOnline) 1 else 2
+                val lastSong = mutableQueueWindows.indexOfLast { it.firstPeriodIndex != pendingAutoplayIndex }
+                if (lastSong < 0 || reorderableState.isAnyItemDragging) return@derivedStateOf null
+                val lastSongItem = firstSongItem + lastSong
+                val layout = lazyListState.layoutInfo
+                val visible = layout.visibleItemsInfo
+                if (visible.isEmpty()) return@derivedStateOf null
+                val visibleEnd = layout.viewportEndOffset - layout.afterContentPadding
+                val lastSongShown =
+                    visible.any { it.index == lastSongItem && it.offset + it.size <= visibleEnd + 1 } ||
+                        visible.any { it.index > lastSongItem && it.offset < visibleEnd }
+                val centreOffset = (layout.viewportStartOffset + layout.beforeContentPadding + visibleEnd) / 2
+                val centreItem = visible.lastOrNull { it.offset <= centreOffset }?.index ?: visible.first().index
+                queueJumpDirection(
+                    atTop = !lazyListState.canScrollBackward,
+                    atEnd = lastSongShown || !lazyListState.canScrollForward,
+                    centreSong = (centreItem - firstSongItem).coerceIn(0, lastSong),
+                    songCount = lastSong + 1,
+                ) to lastSongItem
+            }
+        }
+
         LaunchedEffect(queueWindows) {
             mutableQueueWindows.apply {
                 clear()
@@ -1280,6 +1308,41 @@ fun Queue(
                 contentDescription = null,
                 modifier = Modifier.align(Alignment.Center),
             )
+
+            // FletchTunes (row 198): jump to the queue's other end. In the bottom bar, between
+            // shuffle and the collapse chevron, so it never sits over a song row, its drag handle
+            // or its swipe. See queueJumpDirection() for when it shows and which way it points.
+            val jump = queueJump
+            val jumpDirection = jump?.first
+            var lastJumpDirection by remember { mutableStateOf(QueueJump.ToBottom) }
+            if (jumpDirection != null) lastJumpDirection = jumpDirection
+            AnimatedVisibility(
+                visible = jumpDirection != null,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.Center).offset(x = (-64).dp),
+            ) {
+                IconButton(
+                    onClick = {
+                        val target = if (lastJumpDirection == QueueJump.ToTop) 0 else jump?.second ?: return@IconButton
+                        coroutineScope.launch { lazyListState.animateScrollToItem(target) }
+                    },
+                    modifier =
+                        Modifier
+                            .size(36.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f), CircleShape),
+                ) {
+                    Icon(
+                        painter =
+                            painterResource(
+                                if (lastJumpDirection == QueueJump.ToTop) R.drawable.arrow_upward else R.drawable.arrow_downward,
+                            ),
+                        contentDescription =
+                            if (lastJumpDirection == QueueJump.ToTop) "Jump to top of queue" else "Jump to bottom of queue",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
 
             IconButton(
                 enabled = !isListenTogetherGuest,
