@@ -3270,6 +3270,23 @@ class MusicService :
                 markEpisodeFinished(episode.id, player.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
             }
 
+            // Row 198: the queue ran out (repeat off, nothing after this song, or the playing last
+            // song was just removed), so it goes back to its first song, paused, and QueueBoard and
+            // the queue sync get that position. Not while casting or as a Listen Together guest.
+            val listenTogetherGuest =
+                ::listenTogetherManager.isInitialized && listenTogetherManager.isInRoom && !listenTogetherManager.isHost
+            if ((!player.hasNextMediaItem() || lastSongRemoved) &&
+                castConnectionHandler?.isCasting?.value != true &&
+                !listenTogetherGuest
+            ) {
+                val handler = Handler(Looper.getMainLooper())
+                com.metrolist.music.playback.queue.restartQueueAtEnd(player, { handler.post(it) }) {
+                    Timber.tag(TAG).d("Queue ended: back to its first song, paused")
+                    recordActiveQueuePlayback()
+                    queueBoard.nudgeSync(com.metrolist.music.playback.queue.QueueBoard.SyncNudge.FLUSH)
+                }
+            }
+
             // Check sleep timer guard - don't autoplay/repeat if sleep timer will pause
             val timer = sleepTimer ?: return
             if (timer.isActive && timer.pauseWhenSongEnd) {
