@@ -1045,4 +1045,9 @@
     <string name="offline_queue_hint">Offline: greyed-out songs aren\'t downloaded and will be skipped.</string>
     <!-- FletchTunes: removing a song from a queue on its Queue page -->
     <string name="removed_song_from_queue">Removed \"%s\" from the queue</string>
+    <!-- FletchTunes (row 201): Restore original order on a queue's Queue page -->
+    <string name="restore_original_order">Restore original order</string>
+    <string name="restored_original_order">Queue back in its original order</string>
+    <string name="already_original_order">This queue is already in its original order</string>
+    <string name="restore_original_order_failed">Couldn\'t restore the original order</string>
 </resources>

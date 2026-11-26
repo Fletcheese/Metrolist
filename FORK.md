@@ -10,7 +10,7 @@ A debug build is in daily use on Fletch's phone. Queues, the scaled-down app, of
 
 **Parallel queues.** Like OuterTune, the app keeps several named queues and remembers them across restarts. A Queues tab lists them with "Song N of M", and you can open, rename, switch, delete, or merge one queue into another. Starting something new makes a new queue instead of overwriting the one you were on, and a queue resumes mid-song.
 
-**The queue holds only what you started.** Tapping a song, album or playlist puts just that in the queue. Radio suggestions sit in a separate Autoplay section below it and only play once the queue runs out. A shuffle order is picked once and kept across switches and restarts.
+**The queue holds only what you started.** Tapping a song, album or playlist puts just that in the queue. Radio suggestions sit in a separate Autoplay section below it and only play once the queue runs out. A shuffle order is picked once and kept across switches and restarts. Each queue also remembers the order it was made in, and "Restore original order" on its page turns shuffle off and puts it back, with songs added later at the end, on every device.
 
 **A smaller app.** One build flag (`DISCOVERY_FEATURES`, off by default) removes the Home and Listen Together tabs, so the app is Search, Queues and Library, opening on Queues. It also stops the background work those screens caused. A single "Discover Mix" entry stays at the top of Library > Playlists, which shows your own playlists in list view. Build with `-PdiscoveryFeatures=true` to get everything back.
 

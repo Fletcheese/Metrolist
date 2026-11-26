@@ -114,6 +114,7 @@ import com.metrolist.music.extensions.move
 import com.metrolist.music.extensions.toggleRepeatMode
 import com.metrolist.music.listentogether.RoomRole
 import com.metrolist.music.models.MediaMetadata
+import com.metrolist.music.playback.queue.RestoreOrderResult
 import com.metrolist.music.ui.component.ActionPromptDialog
 import com.metrolist.music.ui.component.BottomSheet
 import com.metrolist.music.ui.component.BottomSheetState
@@ -1157,6 +1158,51 @@ fun Queue(
                 )
 
                 // FletchTunes: no edit-lock padlock here; the queue is always editable.
+
+                // FletchTunes (row 201): Restore original order, for a saved queue. Shuffle goes
+                // off and the songs go back to the order the queue was made in (songs added later
+                // at the end), with an Undo.
+                if (activeBoardQueueId != null && boardQueueTitle != null && !isListenTogetherGuest) {
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                val result = playerConnection.service.restoreOriginalOrder()
+                                dismissJob?.cancel()
+                                dismissJob =
+                                    coroutineScope.launch {
+                                        when (result) {
+                                            is RestoreOrderResult.Restored -> {
+                                                val choice =
+                                                    snackbarHostState.showSnackbar(
+                                                        message = context.getString(R.string.restored_original_order),
+                                                        actionLabel = context.getString(R.string.undo),
+                                                        duration = SnackbarDuration.Short,
+                                                    )
+                                                if (choice == SnackbarResult.ActionPerformed) {
+                                                    playerConnection.service.undoRestoreOriginalOrder(result.before)
+                                                }
+                                            }
+                                            RestoreOrderResult.AlreadyInOrder ->
+                                                snackbarHostState.showSnackbar(
+                                                    message = context.getString(R.string.already_original_order),
+                                                    duration = SnackbarDuration.Short,
+                                                )
+                                            RestoreOrderResult.NotDone ->
+                                                snackbarHostState.showSnackbar(
+                                                    message = context.getString(R.string.restore_original_order_failed),
+                                                    duration = SnackbarDuration.Short,
+                                                )
+                                        }
+                                    }
+                            }
+                        },
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.format_list_numbered),
+                            contentDescription = stringResource(R.string.restore_original_order),
+                        )
+                    }
+                }
 
                 Column(
                     verticalArrangement = Arrangement.spacedBy(4.dp),

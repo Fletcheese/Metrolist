@@ -156,6 +156,8 @@ class QueueBoard @Inject constructor(
                 ),
             )
             queueDao.replaceSongMaps(id, items.toSongMaps(id))
+            // Row 201: [items] are in their real order, which is the order the queue was made in.
+            writeOriginalOrder(id, items.map { it.id })
             _activeQueueId.value = id
             markContentChanged(id)
             markPlaybackChanged(id)
@@ -184,6 +186,7 @@ class QueueBoard @Inject constructor(
                 // The sync has just replaced this queue; the player's copy is the old one.
                 if (awaitingReload(id)) return@withLock
                 ensureSongsExist(items)
+                val baseline = originalOrderBaseline(id)
                 queueDao.replaceSongMaps(id, items.toSongMaps(id))
                 if (shuffled != null) {
                     queueDao.updateShuffled(id, shuffled)
@@ -205,6 +208,7 @@ class QueueBoard @Inject constructor(
                 } else {
                     queueDao.touch(id, System.currentTimeMillis())
                 }
+                maintainOriginalOrder(id, baseline)
                 if (markContentChanged(id)) nudgeSync(SyncNudge.CONTENT)
                 markPlaybackChanged(id)
             }
@@ -286,9 +290,71 @@ class QueueBoard @Inject constructor(
         }
     }
 
+    // ---- Original order (row 201) ----------------------------------------------------------
+    //
+    // A queue's original order (see QueueOriginalOrder.kt) is kept in a small file per queue, one
+    // song id per line, beside the shuffle-order files: like them it changes on most queue edits,
+    // and a file keeps the Room schema, its migration and upstream merges out of it. It travels to
+    // the other devices in QueueContent.originalOrder.
+
+    private fun originalOrderFile(id: String) = File(File(context.filesDir, "queue_original_orders"), id)
+
+    private fun readOriginalOrder(id: String): List<String>? =
+        runCatching { originalOrderFile(id).takeIf { it.exists() }?.readLines()?.filter { it.isNotEmpty() } }.getOrNull()
+
+    private fun writeOriginalOrder(id: String, order: List<String>) {
+        val file = originalOrderFile(id)
+        runCatching {
+            file.parentFile?.mkdirs()
+            val tmp = File(file.path + ".tmp")
+            tmp.writeText(order.joinToString("\n"))
+            if (!tmp.renameTo(file)) {
+                file.delete()
+                tmp.renameTo(file)
+            }
+        }
+    }
+
+    /** Queue [id]'s songs in their real order, as saved. */
+    private suspend fun savedRealOrder(id: String): List<String>? {
+        val queue = queueDao.getQueueOnce(id) ?: return null
+        val songIds = queueDao.getSongMapsOnce(id).map { it.songId }
+        return realOrderOf(songIds, queue.shuffled, if (queue.shuffled) readShuffleOrder(id) else null)
+    }
+
+    /**
+     * For a queue saved before row 201, which has no original order yet: its real order as saved,
+     * read before an edit changes it, so that order becomes the baseline (set once). Null when the
+     * queue already has one.
+     */
+    private suspend fun originalOrderBaseline(id: String): List<String>? =
+        if (originalOrderFile(id).exists()) null else savedRealOrder(id)
+
+    /** Brings queue [id]'s original order up to date with its saved songs, after an edit. */
+    private suspend fun maintainOriginalOrder(id: String, baseline: List<String>?, preferred: List<String>? = null) {
+        val real = savedRealOrder(id) ?: return
+        val stored = readOriginalOrder(id)
+        val updated = reconcileOriginalOrder(preferred ?: stored ?: baseline, real)
+        if (updated != stored) writeOriginalOrder(id, updated)
+    }
+
+    /**
+     * Queue [id]'s original order for its songs [realOrder] as the player has them now (real order,
+     * no Autoplay suggestion): what "Restore original order" puts the queue in. A queue with no
+     * original order yet takes [realOrder] as its baseline, saved once.
+     */
+    suspend fun originalOrderFor(id: String, realOrder: List<String>): List<String> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val stored = readOriginalOrder(id)
+            if (stored == null && queueDao.getQueueOnce(id) != null) writeOriginalOrder(id, realOrder)
+            reconcileOriginalOrder(stored, realOrder)
+        }
+    }
+
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
             shuffleOrderFile(id).delete()
+            originalOrderFile(id).delete()
             queueDao.deleteQueue(id)
             // The sync row stays behind as the tombstone that tells the other devices.
             val state = queueDao.getSyncState(id) ?: QueueSyncEntity(queueId = id)
@@ -320,6 +386,7 @@ class QueueBoard @Inject constructor(
         if (songs.isEmpty()) return@withContext
         mutex.withLock {
             ensureSongsExist(songs)
+            val baseline = originalOrderBaseline(id)
             val existingIds = queueDao.getSongMapsOnce(id).map { it.songId }
             val oldSize = existingIds.size
             val newIds = existingIds + songs.map { it.id }
@@ -328,6 +395,7 @@ class QueueBoard @Inject constructor(
                 val order = readShuffleOrder(id)
                 if (order != null && order.size == oldSize) writeShuffleOrder(id, order + (oldSize until newIds.size))
             }
+            maintainOriginalOrder(id, baseline)
             queueDao.touch(id, System.currentTimeMillis())
             if (markContentChanged(id)) nudgeSync(SyncNudge.CONTENT)
             markPlaybackChanged(id)
@@ -383,7 +451,8 @@ class QueueBoard @Inject constructor(
         val queue = queueDao.getQueueOnce(id) ?: return null
         val songIds = queueDao.getSongMapsOnce(id).map { it.songId }
         val order = if (queue.shuffled) readShuffleOrder(id) else null
-        return contentHash(queue.title, queue.sourceKey, queue.shuffled, songIds, order)
+        val original = originalOrderForHash(readOriginalOrder(id), realOrderOf(songIds, queue.shuffled, order))
+        return contentHash(queue.title, queue.sourceKey, queue.shuffled, songIds, order, original)
     }
 
     /** Records a local content edit if [id]'s content really changed. True if it did. */
@@ -422,6 +491,8 @@ class QueueBoard @Inject constructor(
                 songs = songs,
                 shuffleOrder = if (queue.shuffled) readShuffleOrder(id) else null,
                 createdAt = queue.createdAt,
+                // A queue with no original order yet sends its real order, the same as its baseline.
+                originalOrder = readOriginalOrder(id) ?: savedRealOrder(id),
             )
             Triple(content, content.hash(), queue.toPlaybackState())
         }
@@ -480,6 +551,7 @@ class QueueBoard @Inject constructor(
             val content = remote.content
             if (remote.deleted || content == null) {
                 shuffleOrderFile(id).delete()
+                originalOrderFile(id).delete()
                 queueDao.deleteQueue(id)
                 queueDao.upsertSyncState(
                     (state ?: QueueSyncEntity(queueId = id)).copy(
@@ -496,6 +568,7 @@ class QueueBoard @Inject constructor(
             val existing = queueDao.getQueueOnce(id)
             val songs = content.songs.map { it.toMediaMetadata() }
             ensureSongsExist(songs)
+            val originalBaseline = if (existing != null) originalOrderBaseline(id) else null
             val takePlayback = livePlayingIndex == null && remote.playback != null &&
                 remote.playbackAt > maxOf(state?.playbackAt ?: 0L, state?.playbackSyncedAt ?: 0L)
             val playback = if (takePlayback) {
@@ -524,6 +597,9 @@ class QueueBoard @Inject constructor(
             queueDao.replaceSongMaps(id, songs.toSongMaps(id))
             val order = content.shuffleOrder
             if (content.shuffled && order != null && order.size == songs.size) writeShuffleOrder(id, order) else shuffleOrderFile(id).delete()
+            // Row 201: the server's original order when it has one; from an older client (which
+            // drops it) this device's own, brought up to date with the new songs.
+            maintainOriginalOrder(id, originalBaseline, preferred = content.originalOrder)
             val hash = content.hash()
             queueDao.upsertSyncState(
                 (state ?: QueueSyncEntity(queueId = id)).copy(

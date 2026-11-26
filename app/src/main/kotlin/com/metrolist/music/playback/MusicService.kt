@@ -4852,6 +4852,8 @@ class MusicService :
     private fun syncActiveQueueToBoard() {
         val id = activeQueueBoardId ?: return
         if (player.mediaItemCount == 0) return
+        // Row 201: a reorder in progress saves once, when it is done.
+        if (reorderingQueue) return
         // Saved in play order (the shuffle order when shuffle is on), so a queue's saved index
         // is "how far through it you are" and resuming it continues the same shuffle.
         val order = playOrderIndices()
@@ -4867,6 +4869,86 @@ class MusicService :
             runCatching {
                 queueBoard.recordQueueEdit(id, items, index, positionMs, shuffled, realPositions)
             }.onFailure { Timber.tag(TAG).e(it, "Failed to sync queue edit to QueueBoard") }
+        }
+    }
+
+    // ---- Restore original order (row 201) ---------------------------------------------------
+
+    /** True while [reorderQueue] moves songs, so each move is not saved (and synced) on its own. */
+    private var reorderingQueue = false
+
+    /** The user's songs as media indices in real order: the player's, minus the waiting Autoplay suggestion. */
+    private fun userSongIndices(): List<Int> {
+        val pending = refreshPendingAutoplayIndex()
+        return (0 until player.mediaItemCount).filter { it != pending }
+    }
+
+    private fun orderSnapshot(id: String) = com.metrolist.music.playback.queue.QueueOrderSnapshot(
+        queueId = id,
+        realOrder = userSongIndices().map { player.getMediaItemAt(it).mediaId },
+        playOrder = playOrderIndices().map { player.getMediaItemAt(it).mediaId },
+        shuffled = player.shuffleModeEnabled,
+    )
+
+    /**
+     * The Queue page's "Restore original order": turns shuffle off and puts the playing queue back
+     * in its original order (QueueBoard keeps it: the order it was made in, with songs added later
+     * on the end), with the current song playing on where it was. Saved and synced as one edit.
+     */
+    suspend fun restoreOriginalOrder(): com.metrolist.music.playback.queue.RestoreOrderResult =
+        withContext(Dispatchers.Main) {
+            val notDone = com.metrolist.music.playback.queue.RestoreOrderResult.NotDone
+            val id = activeQueueBoardId ?: return@withContext notDone
+            if (player.mediaItemCount == 0) return@withContext notDone
+            val before = orderSnapshot(id)
+            val original = runCatching { queueBoard.originalOrderFor(id, before.realOrder) }.getOrNull()
+                ?: return@withContext notDone
+            if (!before.shuffled && before.realOrder == original) {
+                return@withContext com.metrolist.music.playback.queue.RestoreOrderResult.AlreadyInOrder
+            }
+            Timber.tag(TAG).d("Restoring original order of queue $id (${original.size} songs, shuffled=${before.shuffled})")
+            if (reorderQueue(id, original)) com.metrolist.music.playback.queue.RestoreOrderResult.Restored(before) else notDone
+        }
+
+    /** Undo for [restoreOriginalOrder]: the order, and the shuffle order if it had one, from [before]. */
+    suspend fun undoRestoreOriginalOrder(before: com.metrolist.music.playback.queue.QueueOrderSnapshot): Boolean =
+        withContext(Dispatchers.Main) {
+            if (activeQueueBoardId != before.queueId) return@withContext false
+            if (!reorderQueue(before.queueId, before.realOrder)) return@withContext false
+            if (before.shuffled) {
+                demotePendingAutoplay()
+                val current = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+                val order = com.metrolist.music.playback.queue.positionsInOrder(current, before.playOrder)
+                enableShuffleWithOrder(order?.toIntArray())
+            }
+            true
+        }
+
+    /**
+     * Turns shuffle off and moves the user's songs into [target] (song ids, real order), one move per
+     * main-thread turn so no two playlist changes reach the analytics listeners as one batch (the
+     * row 194 crash). Moving songs never changes which song is playing or its position. The queue is
+     * saved once at the end. False if it is no longer queue [id] or its songs changed meanwhile.
+     */
+    private suspend fun reorderQueue(id: String, target: List<String>): Boolean {
+        reorderingQueue = true
+        try {
+            if (player.shuffleModeEnabled) {
+                player.shuffleModeEnabled = false
+                kotlinx.coroutines.yield()
+            }
+            repeat(target.size + 2) {
+                if (activeQueueBoardId != id) return false
+                val songs = userSongIndices()
+                val ids = songs.map { player.getMediaItemAt(it).mediaId }
+                val (from, to) = com.metrolist.music.playback.queue.nextReorderMove(ids, target) ?: return ids == target
+                player.moveMediaItem(songs[from], songs[to])
+                kotlinx.coroutines.yield()
+            }
+            return false
+        } finally {
+            reorderingQueue = false
+            syncActiveQueueToBoard()
         }
     }
 

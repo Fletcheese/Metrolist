@@ -6,6 +6,8 @@
 package com.metrolist.music.playback.queue.sync
 
 import com.metrolist.music.models.MediaMetadata
+import com.metrolist.music.playback.queue.originalOrderForHash
+import com.metrolist.music.playback.queue.realOrderOf
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
@@ -51,6 +53,11 @@ data class QueueContent(
     /** For a shuffled queue, each song's place in the real order (QueueBoard's shuffle file). */
     val shuffleOrder: List<Int>? = null,
     val createdAt: Long = 0L,
+    /**
+     * Row 201: the queue's original order, as song ids (QueueBoard's original-order file), which
+     * "Restore original order" returns to. Older clients drop it; the Worker stores it untouched.
+     */
+    val originalOrder: List<String>? = null,
 )
 
 /** Where a queue is up to. Newest wins; never a conflict. */
@@ -101,6 +108,10 @@ const val TOMBSTONE_HASH = "deleted"
 /**
  * Identifies a queue's content: title, source, shuffle flag, song ids in order and shuffle
  * order. Song metadata is left out, so a fresher thumbnail on one device is not an edit.
+ *
+ * [originalOrder] (row 201) is the queue's original order when it differs from its real order
+ * (see [com.metrolist.music.playback.queue.originalOrderForHash]); null adds nothing, so every
+ * hash from before row 201 is unchanged.
  */
 fun contentHash(
     title: String,
@@ -108,6 +119,7 @@ fun contentHash(
     shuffled: Boolean,
     songIds: List<String>,
     shuffleOrder: List<Int>?,
+    originalOrder: List<String>? = null,
 ): String {
     val canonical = buildString {
         append(title).append('\u0000')
@@ -116,13 +128,21 @@ fun contentHash(
         songIds.joinTo(this, ",")
         append('\u0000')
         shuffleOrder?.joinTo(this, ",")
+        if (originalOrder != null) {
+            append('\u0000').append("original:")
+            originalOrder.joinTo(this, ",")
+        }
     }
     return MessageDigest.getInstance("SHA-1").digest(canonical.toByteArray())
         .joinToString("") { "%02x".format(it) }
 }
 
-fun QueueContent.hash(): String =
-    contentHash(title, sourceKey, shuffled, songs.map { it.id }, shuffleOrder?.takeIf { shuffled })
+fun QueueContent.hash(): String {
+    val ids = songs.map { it.id }
+    val order = shuffleOrder?.takeIf { shuffled }
+    val original = originalOrderForHash(originalOrder, realOrderOf(ids, shuffled, order))
+    return contentHash(title, sourceKey, shuffled, ids, order, original)
+}
 
 fun MediaMetadata.toSyncSong() = SyncSong(
     id = id,
